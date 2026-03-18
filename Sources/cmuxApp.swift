@@ -5781,23 +5781,78 @@ private struct AppIconPickerRow: View {
 private struct ShortcutSettingRow: View {
     let action: KeyboardShortcutSettings.Action
     @State private var shortcut: StoredShortcut
+    @State private var secondaryShortcut: StoredShortcut?
+    @State private var showSecondary: Bool
 
     init(action: KeyboardShortcutSettings.Action) {
         self.action = action
         _shortcut = State(initialValue: KeyboardShortcutSettings.shortcut(for: action))
+        let secondary = KeyboardShortcutSettings.secondaryShortcut(for: action)
+        _secondaryShortcut = State(initialValue: secondary)
+        _showSecondary = State(initialValue: secondary != nil)
     }
 
     var body: some View {
-        KeyboardShortcutRecorder(label: action.label, shortcut: $shortcut)
-            .onChange(of: shortcut) { newValue in
-                KeyboardShortcutSettings.setShortcut(newValue, for: action)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-                let latest = KeyboardShortcutSettings.shortcut(for: action)
-                if latest != shortcut {
-                    shortcut = latest
+        VStack(spacing: 6) {
+            HStack {
+                KeyboardShortcutRecorder(label: action.label, shortcut: $shortcut)
+                    .onChange(of: shortcut) { newValue in
+                        KeyboardShortcutSettings.setShortcut(newValue, for: action)
+                    }
+
+                if !showSecondary {
+                    Button {
+                        let defaultShortcut = StoredShortcut(key: "", command: false, shift: false, option: false, control: false)
+                        secondaryShortcut = defaultShortcut
+                        showSecondary = true
+                        KeyboardShortcutSettings.setSecondaryShortcut(defaultShortcut, for: action)
+                    } label: {
+                        Image(systemName: "plus.circle")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(String(localized: "shortcut.addSecondary.tooltip", defaultValue: "Add secondary shortcut"))
                 }
             }
+
+            if showSecondary {
+                HStack {
+                    KeyboardShortcutRecorder(
+                        label: String(localized: "shortcut.secondary.label", defaultValue: "Secondary"),
+                        shortcut: Binding(
+                            get: { secondaryShortcut ?? StoredShortcut(key: "", command: false, shift: false, option: false, control: false) },
+                            set: { newValue in
+                                secondaryShortcut = newValue
+                                KeyboardShortcutSettings.setSecondaryShortcut(newValue, for: action)
+                            }
+                        )
+                    )
+
+                    Button {
+                        secondaryShortcut = nil
+                        showSecondary = false
+                        KeyboardShortcutSettings.setSecondaryShortcut(nil, for: action)
+                    } label: {
+                        Image(systemName: "minus.circle")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(String(localized: "shortcut.removeSecondary.tooltip", defaultValue: "Remove secondary shortcut"))
+                }
+                .padding(.leading, 16)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            let latestPrimary = KeyboardShortcutSettings.shortcut(for: action)
+            if latestPrimary != shortcut {
+                shortcut = latestPrimary
+            }
+            let latestSecondary = KeyboardShortcutSettings.secondaryShortcut(for: action)
+            if latestSecondary != secondaryShortcut {
+                secondaryShortcut = latestSecondary
+                showSecondary = latestSecondary != nil
+            }
+        }
     }
 }
 

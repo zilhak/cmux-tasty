@@ -80,38 +80,11 @@ enum KeyboardShortcutSettings {
         }
 
         var defaultsKey: String {
-            switch self {
-            case .toggleSidebar: return "shortcut.toggleSidebar"
-            case .newTab: return "shortcut.newTab"
-            case .newWindow: return "shortcut.newWindow"
-            case .closeWindow: return "shortcut.closeWindow"
-            case .openFolder: return "shortcut.openFolder"
-            case .sendFeedback: return "shortcut.sendFeedback"
-            case .showNotifications: return "shortcut.showNotifications"
-            case .jumpToUnread: return "shortcut.jumpToUnread"
-            case .triggerFlash: return "shortcut.triggerFlash"
-            case .nextSidebarTab: return "shortcut.nextSidebarTab"
-            case .prevSidebarTab: return "shortcut.prevSidebarTab"
-            case .renameTab: return "shortcut.renameTab"
-            case .renameWorkspace: return "shortcut.renameWorkspace"
-            case .closeWorkspace: return "shortcut.closeWorkspace"
-            case .focusLeft: return "shortcut.focusLeft"
-            case .focusRight: return "shortcut.focusRight"
-            case .focusUp: return "shortcut.focusUp"
-            case .focusDown: return "shortcut.focusDown"
-            case .splitRight: return "shortcut.splitRight"
-            case .splitDown: return "shortcut.splitDown"
-            case .toggleSplitZoom: return "shortcut.toggleSplitZoom"
-            case .splitBrowserRight: return "shortcut.splitBrowserRight"
-            case .splitBrowserDown: return "shortcut.splitBrowserDown"
-            case .nextSurface: return "shortcut.nextSurface"
-            case .prevSurface: return "shortcut.prevSurface"
-            case .newSurface: return "shortcut.newSurface"
-            case .toggleTerminalCopyMode: return "shortcut.toggleTerminalCopyMode"
-            case .openBrowser: return "shortcut.openBrowser"
-            case .toggleBrowserDeveloperTools: return "shortcut.toggleBrowserDeveloperTools"
-            case .showBrowserJavaScriptConsole: return "shortcut.showBrowserJavaScriptConsole"
-            }
+            "shortcut.\(rawValue)"
+        }
+
+        var secondaryDefaultsKey: String {
+            "shortcut.\(rawValue).secondary"
         }
 
         var defaultShortcut: StoredShortcut {
@@ -200,8 +173,25 @@ enum KeyboardShortcutSettings {
         }
     }
 
+    static func secondaryShortcut(for action: Action) -> StoredShortcut? {
+        guard let data = UserDefaults.standard.data(forKey: action.secondaryDefaultsKey),
+              let shortcut = try? JSONDecoder().decode(StoredShortcut.self, from: data) else {
+            return nil
+        }
+        return shortcut
+    }
+
+    static func setSecondaryShortcut(_ shortcut: StoredShortcut?, for action: Action) {
+        if let shortcut, let data = try? JSONEncoder().encode(shortcut) {
+            UserDefaults.standard.set(data, forKey: action.secondaryDefaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: action.secondaryDefaultsKey)
+        }
+    }
+
     static func resetShortcut(for action: Action) {
         UserDefaults.standard.removeObject(forKey: action.defaultsKey)
+        UserDefaults.standard.removeObject(forKey: action.secondaryDefaultsKey)
     }
 
     static func resetAll() {
