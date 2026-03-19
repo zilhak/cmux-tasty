@@ -9171,6 +9171,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return true
         }
 
+        // Create surface group in current tab: Cmd+Shift+G
+        if matchActionShortcut(event: event, action: .createSurfaceGroup) {
+            if let workspace = tabManager?.selectedWorkspace,
+               let focusedPaneId = workspace.bonsplitController.focusedPaneId,
+               let selectedTab = workspace.bonsplitController.selectedTab(inPane: focusedPaneId) {
+                workspace.splitTabIntoSurfaceGroup(tabId: selectedTab.id)
+            }
+            return true
+        }
+
         // Open browser: Cmd+Shift+L
         if matchActionShortcut(event: event, action: .openBrowser) {
             _ = openBrowserAndFocusAddressBar(insertAtEnd: true)

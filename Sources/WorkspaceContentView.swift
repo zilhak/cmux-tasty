@@ -78,9 +78,6 @@ struct WorkspaceContentView: View {
                     appearance: appearance,
                     hasUnreadNotification: hasUnreadNotification,
                     onFocus: {
-                        // Keep bonsplit focus in sync with the AppKit first responder for the
-                        // active workspace. This prevents divergence between the blue focused-tab
-                        // indicator and where keyboard input/flash-focus actually lands.
                         guard isWorkspaceInputActive else { return }
                         guard workspace.panels[panel.id] != nil else { return }
                         workspace.focusPanel(panel.id, trigger: .terminalFirstResponder)
@@ -278,6 +275,7 @@ struct WorkspaceContentView: View {
         guard GhosttyApp.shared.backgroundLogEnabled else { return }
         GhosttyApp.shared.logBackground(message)
     }
+
 }
 
 extension WorkspaceContentView {

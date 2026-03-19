@@ -190,6 +190,7 @@ class TerminalController {
 
     private var v2BrowserNextElementOrdinal: Int = 1
     private var v2BrowserElementRefs: [String: V2BrowserElementRefEntry] = [:]
+    private var surfaceReadMarks: [UUID: String] = [:]
     private var v2BrowserFrameSelectorBySurface: [UUID: String] = [:]
     private var v2BrowserInitScriptsBySurface: [UUID: [String]] = [:]
     private var v2BrowserInitStylesBySurface: [UUID: [String]] = [:]
@@ -2316,6 +2317,12 @@ class TerminalController {
         case "surface.read_text":
             return v2Result(id: id, self.v2SurfaceReadText(params: params))
 
+        case "surface.set_read_mark":
+            return v2Result(id: id, self.v2SurfaceSetReadMark(params: params))
+
+        case "surface.read_since_mark":
+            return v2Result(id: id, self.v2SurfaceReadSinceMark(params: params))
+
 
 #if DEBUG
         // Debug / test-only
@@ -2438,6 +2445,8 @@ class TerminalController {
             "surface.send_text",
             "surface.send_key",
             "surface.read_text",
+            "surface.set_read_mark",
+            "surface.read_since_mark",
             "surface.clear_history",
             "surface.trigger_flash",
             "pane.list",
@@ -2806,6 +2815,29 @@ class TerminalController {
             let paneUUID = paneByPanelId[panel.id]
             let selectedInPane = selectedInPaneByPanelId[panel.id] ?? false
 
+            // SurfaceGroup: emit a single surface entry with child surfaces nested
+            if let surfaceGroup = panel as? SurfaceGroup {
+                var item: [String: Any] = [
+                    "id": panel.id.uuidString,
+                    "ref": v2Ref(kind: .surface, uuid: panel.id),
+                    "index": surfaceIndex,
+                    "type": "terminal",
+                    "title": workspace.panelTitle(panelId: panel.id) ?? panel.displayTitle,
+                    "focused": panel.id == focusedSurfaceId,
+                    "selected": selectedInPane,
+                    "selected_in_pane": v2OrNull(selectedInPaneByPanelId[panel.id]),
+                    "pane_id": v2OrNull(paneUUID?.uuidString),
+                    "pane_ref": v2Ref(kind: .pane, uuid: paneUUID),
+                    "index_in_pane": v2OrNull(indexInPaneByPanelId[panel.id]),
+                    "url": NSNull(),
+                    "surface_group": v2TreeSurfaceGroupNode(surfaceGroup.rootNode, focusedChildId: surfaceGroup.focusedChildId)
+                ]
+                if let paneUUID {
+                    surfacesByPane[paneUUID, default: []].append(item)
+                }
+                continue
+            }
+
             var item: [String: Any] = [
                 "id": panel.id.uuidString,
                 "ref": v2Ref(kind: .surface, uuid: panel.id),
@@ -2870,7 +2902,29 @@ class TerminalController {
         ]
     }
 
-    // MARK: - V2 Helpers (encoding + result plumbing)
+    private func v2TreeSurfaceGroupNode(_ node: SurfaceGroup.SplitNode, focusedChildId: UUID?) -> [String: Any] {
+        switch node {
+        case .leaf(let panel):
+            return [
+                "type": "surface",
+                "id": panel.id.uuidString,
+                "ref": v2Ref(kind: .surface, uuid: panel.id),
+                "title": panel.displayTitle,
+                "focused": panel.id == focusedChildId
+            ]
+        case .split(let first, let second, let orientation, let ratio):
+            return [
+                "type": "split",
+                "orientation": orientation == .horizontal ? "horizontal" : "vertical",
+                "ratio": ratio,
+                "children": [
+                    v2TreeSurfaceGroupNode(first, focusedChildId: focusedChildId),
+                    v2TreeSurfaceGroupNode(second, focusedChildId: focusedChildId)
+                ]
+            ]
+        }
+    }
+
     // MARK: - V2 Helpers (encoding + result plumbing)
 
     private func v2OrNull(_ value: Any?) -> Any {
@@ -5359,6 +5413,120 @@ class TerminalController {
             result = .ok([
                 "text": text,
                 "base64": base64,
+                "workspace_id": ws.id.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+                "surface_id": surfaceId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+                "window_id": v2OrNull(windowId?.uuidString),
+                "window_ref": v2Ref(kind: .window, uuid: windowId)
+            ])
+        }
+        return result
+    }
+
+    // MARK: - Read Mark (delta tracking)
+
+    private func v2SurfaceSetReadMark(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+
+        var result: V2CallResult = .err(code: "internal_error", message: "Failed to set mark", data: nil)
+        v2MainSync {
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                result = .err(code: "not_found", message: "Workspace not found", data: nil)
+                return
+            }
+            let surfaceId = v2UUID(params, "surface_id") ?? ws.focusedPanelId
+            guard let surfaceId else {
+                result = .err(code: "not_found", message: "No focused surface", data: nil)
+                return
+            }
+            guard let terminalPanel = ws.terminalPanel(for: surfaceId) else {
+                result = .err(code: "invalid_params", message: "Surface is not a terminal",
+                              data: ["surface_id": surfaceId.uuidString])
+                return
+            }
+
+            let response = readTerminalTextBase64(terminalPanel: terminalPanel, includeScrollback: true)
+            guard response.hasPrefix("OK ") else {
+                result = .err(code: "internal_error", message: response, data: nil)
+                return
+            }
+            let base64 = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let snapshot = Data(base64Encoded: base64).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            surfaceReadMarks[surfaceId] = snapshot
+
+            let windowId = v2ResolveWindowId(tabManager: tabManager)
+            result = .ok([
+                "workspace_id": ws.id.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+                "surface_id": surfaceId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+                "window_id": v2OrNull(windowId?.uuidString),
+                "window_ref": v2Ref(kind: .window, uuid: windowId)
+            ])
+        }
+        return result
+    }
+
+    private func v2SurfaceReadSinceMark(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+
+        let clearMark = v2Bool(params, "clear") ?? false
+
+        var result: V2CallResult = .err(code: "internal_error", message: "Failed to read since mark", data: nil)
+        v2MainSync {
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                result = .err(code: "not_found", message: "Workspace not found", data: nil)
+                return
+            }
+            let surfaceId = v2UUID(params, "surface_id") ?? ws.focusedPanelId
+            guard let surfaceId else {
+                result = .err(code: "not_found", message: "No focused surface", data: nil)
+                return
+            }
+            guard let terminalPanel = ws.terminalPanel(for: surfaceId) else {
+                result = .err(code: "invalid_params", message: "Surface is not a terminal",
+                              data: ["surface_id": surfaceId.uuidString])
+                return
+            }
+
+            let response = readTerminalTextBase64(terminalPanel: terminalPanel, includeScrollback: true)
+            guard response.hasPrefix("OK ") else {
+                result = .err(code: "internal_error", message: response, data: nil)
+                return
+            }
+            let base64 = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+            let current = Data(base64Encoded: base64).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+
+            let marked = surfaceReadMarks[surfaceId]
+            let newText: String
+            if let marked {
+                if current.hasPrefix(marked) {
+                    var suffix = String(current.dropFirst(marked.count))
+                    if suffix.hasPrefix("\n") { suffix = String(suffix.dropFirst()) }
+                    newText = suffix
+                } else {
+                    // Terminal was reset/reflowed — return full text
+                    newText = current
+                }
+            } else {
+                newText = current
+            }
+
+            if clearMark {
+                surfaceReadMarks.removeValue(forKey: surfaceId)
+            }
+
+            let newBase64 = newText.data(using: .utf8)?.base64EncodedString() ?? ""
+            let windowId = v2ResolveWindowId(tabManager: tabManager)
+            result = .ok([
+                "text": newText,
+                "base64": newBase64,
+                "has_mark": marked != nil,
                 "workspace_id": ws.id.uuidString,
                 "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
                 "surface_id": surfaceId.uuidString,
@@ -12765,8 +12933,10 @@ class TerminalController {
         }
 
         // Defensive: include any orphaned panels in a stable order at the end.
+        // Exclude surface group children — they are rendered via their group's surface_group field.
         let orphans = tab.panels.values
             .filter { !seen.contains($0.id) }
+            .filter { tab.surfaceGroupContaining(childId: $0.id) == nil }
             .sorted { $0.id.uuidString < $1.id.uuidString }
         result.append(contentsOf: orphans)
 

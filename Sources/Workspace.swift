@@ -386,6 +386,9 @@ extension Workspace {
             terminalSnapshot = nil
             browserSnapshot = nil
             markdownSnapshot = SessionMarkdownPanelSnapshot(filePath: markdownPanel.filePath)
+        case .surfaceGroup:
+            // Surface groups are not individually snapshotted for session restore.
+            return nil
         }
 
         return SessionPanelSnapshot(
@@ -577,6 +580,9 @@ extension Workspace {
             }
             applySessionPanelMetadata(snapshot, toPanelId: markdownPanel.id)
             return markdownPanel.id
+        case .surfaceGroup:
+            // Surface groups are not individually restored from session snapshots.
+            return nil
         }
     }
 
@@ -4828,10 +4834,16 @@ final class Workspace: Identifiable, ObservableObject {
     /// The currently focused terminal panel (if any)
     var focusedTerminalPanel: TerminalPanel? {
         guard let panelId = focusedPanelId,
-              let panel = panels[panelId] as? TerminalPanel else {
+              let panel = panels[panelId] else {
             return nil
         }
-        return panel
+        if let terminalPanel = panel as? TerminalPanel {
+            return terminalPanel
+        }
+        if let surfaceGroup = panel as? SurfaceGroup {
+            return surfaceGroup.focusedChild
+        }
+        return nil
     }
 
     func effectiveSelectedPanelId(inPane paneId: PaneID) -> UUID? {
@@ -4925,6 +4937,19 @@ final class Workspace: Identifiable, ObservableObject {
         static let terminal = "terminal"
         static let browser = "browser"
         static let markdown = "markdown"
+    }
+
+    // MARK: - Surface Group Helpers
+
+    /// Find the SurfaceGroup that contains a given child panel ID, if any.
+    func surfaceGroupContaining(childId: UUID) -> SurfaceGroup? {
+        for panel in panels.values {
+            guard let group = panel as? SurfaceGroup else { continue }
+            if group.allChildPanels.contains(where: { $0.id == childId }) {
+                return group
+            }
+        }
+        return nil
     }
 
     enum PanelShellActivityState: String {
@@ -5148,6 +5173,71 @@ final class Workspace: Identifiable, ObservableObject {
         guard configuration.appearance.splitButtonTooltips != tooltips else { return }
         configuration.appearance.splitButtonTooltips = tooltips
         bonsplitController.configuration = configuration
+    }
+
+    // MARK: - Surface Group Operations
+
+    /// Split the currently selected tab into a surface group. The existing terminal stays as the
+    /// first child, and a new terminal is added as the second child. The tab keeps its
+    /// original appearance in the tab bar.
+    /// If the tab already has a surface group, adds a new split to the existing group.
+    @discardableResult
+    func splitTabIntoSurfaceGroup(
+        tabId: TabID,
+        orientation: SplitOrientation = .horizontal,
+        configTemplate: ghostty_surface_config_s? = nil
+    ) -> Bool {
+        guard let existingPanelId = panelIdFromSurfaceId(tabId) else { return false }
+
+        // If this tab already has a surface group, split within it
+        if let existingGroup = panels[existingPanelId] as? SurfaceGroup {
+            guard let focusedChildId = existingGroup.focusedChildId else { return false }
+
+            let newTerminal = TerminalPanel(
+                workspaceId: id,
+                context: GHOSTTY_SURFACE_CONTEXT_SPLIT,
+                configTemplate: configTemplate,
+                workingDirectory: currentDirectory,
+                portOrdinal: portOrdinal
+            )
+            panelTitles[newTerminal.id] = newTerminal.displayTitle
+            seedTerminalInheritanceFontPoints(panelId: newTerminal.id, configTemplate: configTemplate)
+
+            existingGroup.splitChild(focusedChildId, orientation: orientation, newPanel: newTerminal)
+            panels[newTerminal.id] = newTerminal
+            return true
+        }
+
+        // Convert a single TerminalPanel into a SurfaceGroup
+        guard let existingPanel = panels[existingPanelId] as? TerminalPanel else {
+            return false
+        }
+
+        let newTerminal = TerminalPanel(
+            workspaceId: id,
+            context: GHOSTTY_SURFACE_CONTEXT_SPLIT,
+            configTemplate: configTemplate,
+            workingDirectory: currentDirectory,
+            portOrdinal: portOrdinal
+        )
+        panelTitles[newTerminal.id] = newTerminal.displayTitle
+        seedTerminalInheritanceFontPoints(panelId: newTerminal.id, configTemplate: configTemplate)
+
+        let group = SurfaceGroup(
+            id: UUID(),
+            workspaceId: id,
+            first: existingPanel,
+            second: newTerminal,
+            orientation: orientation
+        )
+
+        // Add the group to panels. The original TerminalPanel stays in panels
+        // under its own ID. The new terminal is also registered.
+        panels[group.id] = group
+        panels[newTerminal.id] = newTerminal
+        // Update the Bonsplit tab mapping to point to the group.
+        surfaceIdToPanelId[tabId] = group.id
+        return true
     }
 
     // MARK: - Surface ID to Panel ID Mapping
@@ -5385,6 +5475,8 @@ final class Workspace: Identifiable, ObservableObject {
             return SurfaceKind.browser
         case .markdown:
             return SurfaceKind.markdown
+        case .surfaceGroup:
+            return SurfaceKind.terminal
         }
     }
 
@@ -7913,6 +8005,9 @@ final class Workspace: Identifiable, ObservableObject {
         targetPanel.focus()
         if let terminalPanel = targetPanel as? TerminalPanel {
             terminalPanel.hostedView.ensureFocus(for: id, surfaceId: targetPanelId)
+        } else if let surfaceGroup = targetPanel as? SurfaceGroup,
+                  let focusedChild = surfaceGroup.focusedChild {
+            focusedChild.hostedView.ensureFocus(for: id, surfaceId: focusedChild.id)
         }
         if let dir = panelDirectories[targetPanelId] {
             currentDirectory = dir
@@ -8239,8 +8334,11 @@ final class Workspace: Identifiable, ObservableObject {
             window.contentView?.layoutSubtreeIfNeeded()
         }
 
-        for panel in panels.values {
-            guard let terminalPanel = panel as? TerminalPanel else { continue }
+        // Child terminals are registered in panels directly, so a simple
+        // compactMap captures all terminals including surface group children.
+        let allTerminals = panels.values.compactMap { $0 as? TerminalPanel }
+
+        for terminalPanel in allTerminals {
             let hostedView = terminalPanel.hostedView
             let hasUsableBounds = hostedView.bounds.width > 1 && hostedView.bounds.height > 1
             let hasSurface = terminalPanel.surface.surface != nil
@@ -8306,12 +8404,25 @@ final class Workspace: Identifiable, ObservableObject {
 
         for panel in panels.values {
             guard let terminalPanel = panel as? TerminalPanel else { continue }
-            let shouldBeVisible = visiblePanelIds.contains(terminalPanel.id)
+
+            // For surface group children, visibility follows the group.
+            let shouldBeVisible: Bool
+            let shouldBeActive: Bool
+            if let group = surfaceGroupContaining(childId: terminalPanel.id) {
+                let groupVisible = visiblePanelIds.contains(group.id)
+                shouldBeVisible = groupVisible
+                shouldBeActive = groupVisible
+                    && focusedPanelId == group.id
+                    && group.focusedChildId == terminalPanel.id
+            } else {
+                shouldBeVisible = visiblePanelIds.contains(terminalPanel.id)
+                shouldBeActive = shouldBeVisible && focusedPanelId == terminalPanel.id
+            }
+
             if terminalPanel.hostedView.debugPortalVisibleInUI != shouldBeVisible {
                 terminalPanel.hostedView.setVisibleInUI(shouldBeVisible)
                 didChange = true
             }
-            let shouldBeActive = shouldBeVisible && focusedPanelId == terminalPanel.id
             if terminalPanel.hostedView.debugPortalActive != shouldBeActive {
                 terminalPanel.hostedView.setActive(shouldBeActive)
                 didChange = true
@@ -8330,9 +8441,15 @@ final class Workspace: Identifiable, ObservableObject {
 
         for panel in panels.values {
             guard let terminalPanel = panel as? TerminalPanel else { continue }
-            let shouldBeVisible = visiblePanelIds.contains(terminalPanel.id)
-            let hostedView = terminalPanel.hostedView
 
+            let shouldBeVisible: Bool
+            if let group = surfaceGroupContaining(childId: terminalPanel.id) {
+                shouldBeVisible = visiblePanelIds.contains(group.id)
+            } else {
+                shouldBeVisible = visiblePanelIds.contains(terminalPanel.id)
+            }
+
+            let hostedView = terminalPanel.hostedView
             if shouldBeVisible {
                 if hostedView.isHidden || hostedView.window == nil || hostedView.superview == nil {
                     return true
@@ -8892,7 +9009,12 @@ extension Workspace: BonsplitDelegate {
 
         // Converge AppKit first responder with bonsplit's selected tab in the focused pane.
         // Without this, keyboard input can remain on a different terminal than the blue tab indicator.
-        if reassertAppKitFocus, let terminalPanel = panel as? TerminalPanel {
+        let effectiveTerminalPanel: TerminalPanel? = {
+            if let tp = panel as? TerminalPanel { return tp }
+            if let sg = panel as? SurfaceGroup { return sg.focusedChild }
+            return nil
+        }()
+        if reassertAppKitFocus, let terminalPanel = effectiveTerminalPanel {
             if shouldMoveTerminalSurfaceFocus(for: activationIntent),
                !terminalPanel.hostedView.isSurfaceViewFirstResponder() {
 #if DEBUG
@@ -8912,7 +9034,7 @@ extension Workspace: BonsplitDelegate {
                 "tab=\(selectedTabId.uuid.uuidString.prefix(5)) intent=\(String(describing: activationIntent))"
             )
 #endif
-            terminalPanel.hostedView.ensureFocus(for: id, surfaceId: panelId)
+            terminalPanel.hostedView.ensureFocus(for: id, surfaceId: terminalPanel.id)
         }
 
         if shouldRestoreFocusIntentAfterActivation(activationIntent) {
@@ -9091,6 +9213,12 @@ extension Workspace: BonsplitDelegate {
     }
 
     func splitTabBar(_ controller: BonsplitController, shouldCloseTab tab: Bonsplit.Tab, inPane pane: PaneID) -> Bool {
+        // Surface group tabs: allow close, child panels are cleaned up in didCloseTab.
+        if let panelId = panelIdFromSurfaceId(tab.id),
+           panels[panelId] is SurfaceGroup {
+            return true
+        }
+
         func recordPostCloseSelection() {
             let tabs = controller.tabs(inPane: pane)
             guard let idx = tabs.firstIndex(where: { $0.id == tab.id }) else {
@@ -9176,6 +9304,41 @@ extension Workspace: BonsplitDelegate {
     }
 
     func splitTabBar(_ controller: BonsplitController, didCloseTab tabId: TabID, fromPane pane: PaneID) {
+        // If this was a surface group tab, close the group and all child panels.
+        if let panelId = panelIdFromSurfaceId(tabId),
+           let surfaceGroup = panels[panelId] as? SurfaceGroup {
+            // Clean up each child terminal from panels and subsidiary dictionaries.
+            for child in surfaceGroup.allChildPanels {
+                child.close()
+                panels.removeValue(forKey: child.id)
+                untrackRemoteTerminalSurface(child.id)
+                panelDirectories.removeValue(forKey: child.id)
+                panelGitBranches.removeValue(forKey: child.id)
+                panelPullRequests.removeValue(forKey: child.id)
+                panelTitles.removeValue(forKey: child.id)
+                panelCustomTitles.removeValue(forKey: child.id)
+                pinnedPanelIds.remove(child.id)
+                manualUnreadPanelIds.remove(child.id)
+                manualUnreadMarkedAt.removeValue(forKey: child.id)
+                panelSubscriptions.removeValue(forKey: child.id)
+                panelShellActivityStates.removeValue(forKey: child.id)
+                surfaceTTYNames.removeValue(forKey: child.id)
+                restoredTerminalScrollbackByPanelId.removeValue(forKey: child.id)
+                PortScanner.shared.unregisterPanel(workspaceId: id, panelId: child.id)
+                terminalInheritanceFontPointsByPanelId.removeValue(forKey: child.id)
+                AppDelegate.shared?.notificationStore?.clearNotifications(forTabId: id, surfaceId: child.id)
+            }
+            // Clean up the group itself.
+            panels.removeValue(forKey: panelId)
+            panelTitles.removeValue(forKey: panelId)
+            panelCustomTitles.removeValue(forKey: panelId)
+            surfaceIdToPanelId.removeValue(forKey: tabId)
+            recomputeListeningPorts()
+            scheduleTerminalGeometryReconcile()
+            scheduleFocusReconcile()
+            return
+        }
+
         forceCloseTabIds.remove(tabId)
         let selectTabId = postCloseSelectTabId.removeValue(forKey: tabId)
         let closedBrowserRestoreSnapshot = pendingClosedBrowserRestoreSnapshots.removeValue(forKey: tabId)

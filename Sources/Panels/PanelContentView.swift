@@ -54,6 +54,21 @@ struct PanelContentView: View {
                     onRequestPanelFocus: onRequestPanelFocus
                 )
             }
+        case .surfaceGroup:
+            if let surfaceGroup = panel as? SurfaceGroup {
+                SurfaceGroupView(
+                    group: surfaceGroup,
+                    isFocused: isFocused,
+                    isVisibleInUI: isVisibleInUI,
+                    portalPriority: portalPriority,
+                    appearance: appearance,
+                    onChildFocus: { childId in
+                        surfaceGroup.focusChild(childId)
+                        onFocus()
+                    },
+                    onTriggerFlash: { _ in onTriggerFlash() }
+                )
+            }
         }
     }
 }

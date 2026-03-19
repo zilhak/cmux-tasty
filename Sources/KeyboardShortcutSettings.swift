@@ -37,6 +37,9 @@ enum KeyboardShortcutSettings {
         case splitBrowserRight
         case splitBrowserDown
 
+        // Surface groups
+        case createSurfaceGroup
+
         // Panels
         case openBrowser
         case toggleBrowserDeveloperTools
@@ -73,6 +76,7 @@ enum KeyboardShortcutSettings {
             case .toggleSplitZoom: return String(localized: "shortcut.togglePaneZoom.label", defaultValue: "Toggle Pane Zoom")
             case .splitBrowserRight: return String(localized: "shortcut.splitBrowserRight.label", defaultValue: "Split Browser Right")
             case .splitBrowserDown: return String(localized: "shortcut.splitBrowserDown.label", defaultValue: "Split Browser Down")
+            case .createSurfaceGroup: return String(localized: "shortcut.createSurfaceGroup.label", defaultValue: "New Surface Group")
             case .openBrowser: return String(localized: "shortcut.openBrowser.label", defaultValue: "Open Browser")
             case .toggleBrowserDeveloperTools: return String(localized: "shortcut.toggleBrowserDevTools.label", defaultValue: "Toggle Browser Developer Tools")
             case .showBrowserJavaScriptConsole: return String(localized: "shortcut.showBrowserJSConsole.label", defaultValue: "Show Browser JavaScript Console")
@@ -143,6 +147,8 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "t", command: true, shift: false, option: false, control: false)
             case .toggleTerminalCopyMode:
                 return StoredShortcut(key: "m", command: true, shift: true, option: false, control: false)
+            case .createSurfaceGroup:
+                return StoredShortcut(key: "g", command: true, shift: true, option: false, control: false)
             case .openBrowser:
                 return StoredShortcut(key: "l", command: true, shift: true, option: false, control: false)
             case .toggleBrowserDeveloperTools:

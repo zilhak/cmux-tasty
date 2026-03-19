@@ -1990,6 +1990,43 @@ struct CMUXCLI {
                 print((payload["text"] as? String) ?? "")
             }
 
+        case "set-mark":
+            let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
+            let (sfArg, rem1) = parseOption(rem0, name: "--surface")
+            if !rem1.isEmpty {
+                throw CLIError(message: "set-mark: unexpected arguments: \(rem1.joined(separator: " "))")
+            }
+            let workspaceArg = wsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let surfaceArg = sfArg ?? (wsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            var params: [String: Any] = [:]
+            let wsId = try normalizeWorkspaceHandle(workspaceArg, client: client)
+            if let wsId { params["workspace_id"] = wsId }
+            let sfId = try normalizeSurfaceHandle(surfaceArg, client: client, workspaceHandle: wsId)
+            if let sfId { params["surface_id"] = sfId }
+            let payload = try client.sendV2(method: "surface.set_read_mark", params: params)
+            if jsonOutput { print(jsonString(payload)) }
+            else { print("OK \(payload["surface_ref"] as? String ?? "")") }
+
+        case "read-since-mark":
+            let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
+            let (sfArg, rem1) = parseOption(rem0, name: "--surface")
+            let hasClear = rem1.contains("--clear")
+            let trailing = rem1.filter { $0 != "--clear" }
+            if !trailing.isEmpty {
+                throw CLIError(message: "read-since-mark: unexpected arguments: \(trailing.joined(separator: " "))")
+            }
+            let workspaceArg = wsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let surfaceArg = sfArg ?? (wsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            var params: [String: Any] = [:]
+            let wsId = try normalizeWorkspaceHandle(workspaceArg, client: client)
+            if let wsId { params["workspace_id"] = wsId }
+            let sfId = try normalizeSurfaceHandle(surfaceArg, client: client, workspaceHandle: wsId)
+            if let sfId { params["surface_id"] = sfId }
+            if hasClear { params["clear"] = true }
+            let payload = try client.sendV2(method: "surface.read_since_mark", params: params)
+            if jsonOutput { print(jsonString(payload)) }
+            else { print((payload["text"] as? String) ?? "") }
+
         case "send":
             let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
             let (sfArg, rem1) = parseOption(rem0, name: "--surface")
@@ -6663,6 +6700,36 @@ struct CMUXCLI {
               cmux read-screen
               cmux read-screen --surface surface:2 --scrollback --lines 200
             """
+        case "set-mark":
+            return """
+            Usage: cmux set-mark [flags]
+
+            Save the current terminal output as a mark. Use read-since-mark to get only the text appended after this point.
+
+            Flags:
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+              --surface <id|ref>     Target surface (default: $CMUX_SURFACE_ID)
+
+            Example:
+              cmux set-mark --surface surface:2
+              cmux send --surface surface:2 "echo hello\\n"
+              cmux read-since-mark --surface surface:2
+            """
+        case "read-since-mark":
+            return """
+            Usage: cmux read-since-mark [flags]
+
+            Read only the terminal text appended since the last set-mark. If no mark has been set, returns the full output.
+
+            Flags:
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+              --surface <id|ref>     Target surface (default: $CMUX_SURFACE_ID)
+              --clear                Clear the mark after reading
+
+            Example:
+              cmux read-since-mark --surface surface:2
+              cmux read-since-mark --surface surface:2 --clear
+            """
         case "send":
             return """
             Usage: cmux send [flags] [--] <text>
@@ -8363,7 +8430,32 @@ struct CMUXCLI {
                     for (surfaceIndex, surface) in surfaces.enumerated() {
                         let surfaceIsLast = surfaceIndex == surfaces.count - 1
                         let surfaceBranch = surfaceIsLast ? "└── " : "├── "
-                        lines.append("\(workspaceIndent)\(paneIndent)\(surfaceBranch)\(treeSurfaceLabel(surface, idFormat: idFormat))")
+                        let surfaceIndent = surfaceIsLast ? "    " : "│   "
+                        // If this surface has a surface group, append [group ↔/↕] to the label
+                        // and render children directly under it (absorbing the top-level split).
+                        if let groupNode = surface["surface_group"] as? [String: Any],
+                           (groupNode["type"] as? String) == "split" {
+                            let orientation = (groupNode["orientation"] as? String) ?? "horizontal"
+                            let arrow = orientation == "horizontal" ? "↔" : "↕"
+                            lines.append("\(workspaceIndent)\(paneIndent)\(surfaceBranch)\(treeSurfaceLabel(surface, idFormat: idFormat)) [group \(arrow)]")
+
+                            let children = groupNode["children"] as? [[String: Any]] ?? []
+                            let basePrefix = "\(workspaceIndent)\(paneIndent)\(surfaceIndent)"
+                            for (childIndex, child) in children.enumerated() {
+                                let childIsLast = childIndex == children.count - 1
+                                let branch = childIsLast ? "└── " : "├── "
+                                let indent = childIsLast ? "    " : "│   "
+                                renderSurfaceGroupNode(
+                                    child,
+                                    linePrefix: "\(basePrefix)\(branch)",
+                                    childPrefix: "\(basePrefix)\(indent)",
+                                    lines: &lines,
+                                    idFormat: idFormat
+                                )
+                            }
+                        } else {
+                            lines.append("\(workspaceIndent)\(paneIndent)\(surfaceBranch)\(treeSurfaceLabel(surface, idFormat: idFormat))")
+                        }
                     }
                 }
             }
@@ -8432,6 +8524,55 @@ struct CMUXCLI {
             parts.append(url)
         }
         return parts.joined(separator: " ")
+    }
+
+    /// Recursively render a surface group's split tree.
+    /// `linePrefix` is the indentation for this node's own line.
+    /// `childPrefix` is the indentation for children lines (continuation).
+    private func renderSurfaceGroupNode(
+        _ node: [String: Any],
+        linePrefix: String,
+        childPrefix: String,
+        lines: inout [String],
+        idFormat: CLIIDFormat
+    ) {
+        let nodeType = (node["type"] as? String) ?? ""
+        if nodeType == "surface" {
+            let title = (node["title"] as? String) ?? ""
+            let focused = (node["focused"] as? Bool) ?? false
+            let ref = textHandleFromNode(node, idFormat: idFormat)
+            var parts = ["surface \(ref)", "[terminal]"]
+            if !title.isEmpty { parts.append("\"\(title)\"") }
+            if focused { parts.append("[focused]") }
+            lines.append("\(linePrefix)\(parts.joined(separator: " "))")
+        } else if nodeType == "split" {
+            let orientation = (node["orientation"] as? String) ?? "horizontal"
+            let children = node["children"] as? [[String: Any]] ?? []
+            let arrow = orientation == "horizontal" ? "↔" : "↕"
+            lines.append("\(linePrefix)group [\(orientation)] \(arrow)")
+            for (childIndex, child) in children.enumerated() {
+                let childIsLast = childIndex == children.count - 1
+                let branch = childIsLast ? "└── " : "├── "
+                let indent = childIsLast ? "    " : "│   "
+                renderSurfaceGroupNode(
+                    child,
+                    linePrefix: "\(childPrefix)\(branch)",
+                    childPrefix: "\(childPrefix)\(indent)",
+                    lines: &lines,
+                    idFormat: idFormat
+                )
+            }
+        }
+    }
+
+    private func textHandleFromNode(_ node: [String: Any], idFormat: CLIIDFormat) -> String {
+        if let ref = node["ref"] as? String, idFormat != .uuids {
+            return ref
+        }
+        if let id = node["id"] as? String {
+            return id
+        }
+        return "?"
     }
 
     private func isUUID(_ value: String) -> Bool {
@@ -11068,6 +11209,8 @@ struct CMUXCLI {
           rename-window [--workspace <id|ref>] <title>
           current-workspace
           read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]
+          set-mark [--workspace <id|ref>] [--surface <id|ref>]
+          read-since-mark [--workspace <id|ref>] [--surface <id|ref>] [--clear]
           send [--workspace <id|ref>] [--surface <id|ref>] <text>
           send-key [--workspace <id|ref>] [--surface <id|ref>] <key>
           send-panel --panel <id|ref> [--workspace <id|ref>] <text>
