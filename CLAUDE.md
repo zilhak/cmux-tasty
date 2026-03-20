@@ -33,6 +33,29 @@ xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Debug -des
 - `vendor/bonsplit/` — Bonsplit 라이브러리 (split pane 관리)
 - `ghostty/` — Ghostty 터미널 엔진 서브모듈
 
+## 버전 및 릴리즈
+
+### 버전 규칙
+
+태그 형식: `v{tasty 버전}-from-{upstream 버전}`
+
+- tasty 버전: fork 자체의 semver (0.1.0부터 시작)
+- upstream 버전: sync한 시점의 upstream `MARKETING_VERSION`
+- 예시: `v0.1.0-from-0.62.2`
+
+### 버전 올리기 기준
+
+- **patch** (0.1.x): 같은 upstream 기반에서 fork 수정 (버그 픽스, 소규모 변경)
+- **minor** (0.x.0): upstream 새로 sync 하거나 fork 자체 기능 추가
+- **major** (x.0.0): 큰 구조 변경
+
+### 릴리즈 절차
+
+1. Release 빌드: `xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Release -destination 'platform=macOS' -derivedDataPath build build`
+2. zip 패키징: `ditto -c -k --keepParent build/Build/Products/Release/cmux-tasty.app .claude/cmux-tasty.zip`
+3. 태그 생성: `git tag v{tasty}-from-{upstream}`
+4. GitHub Release 생성: `gh release create` 로 zip 업로드
+
 ## 작업 문서화
 
 작업이 완료되면, 어떤 작업이 수행되었는지에 대해 `docs/tasty/` 하위에 문서를 작성합니다.
