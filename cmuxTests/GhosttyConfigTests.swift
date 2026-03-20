@@ -1793,6 +1793,43 @@ final class SocketControlSettingsTests: XCTestCase {
     }
 }
 
+final class UITestLaunchManifestTests: XCTestCase {
+    func testManifestPathReadsArgumentValue() {
+        XCTAssertEqual(
+            UITestLaunchManifest.manifestPath(
+                from: ["cmux", "-cmuxUITestLaunchManifest", "/tmp/cmux-ui-test-launch.json"]
+            ),
+            "/tmp/cmux-ui-test-launch.json"
+        )
+    }
+
+    func testManifestPathReturnsNilWithoutValue() {
+        XCTAssertNil(
+            UITestLaunchManifest.manifestPath(
+                from: ["cmux", "-cmuxUITestLaunchManifest"]
+            )
+        )
+    }
+
+    func testApplyIfPresentDecodesEnvironmentPayload() {
+        let payload = """
+        {"environment":{"CMUX_TAG":"ui-tests-display","CMUX_SOCKET_PATH":"/tmp/cmux-ui-tests.sock"}}
+        """.data(using: .utf8)!
+        var applied: [String: String] = [:]
+
+        UITestLaunchManifest.applyIfPresent(
+            arguments: ["cmux", UITestLaunchManifest.argumentName, "/tmp/cmux-ui-test-launch.json"],
+            loadData: { _ in payload },
+            applyEnvironment: { key, value in
+                applied[key] = value
+            }
+        )
+
+        XCTAssertEqual(applied["CMUX_TAG"], "ui-tests-display")
+        XCTAssertEqual(applied["CMUX_SOCKET_PATH"], "/tmp/cmux-ui-tests.sock")
+    }
+}
+
 final class PostHogAnalyticsPropertiesTests: XCTestCase {
     func testDailyActivePropertiesIncludeVersionAndBuild() {
         let properties = PostHogAnalytics.dailyActiveProperties(
@@ -1979,16 +2016,10 @@ final class GhosttyMouseFocusTests: XCTestCase {
         XCTAssertFalse(ranges.contains("U+AC00-U+D7AF"), "Should NOT include Hangul")
     }
 
-    func testCJKFontMappingsReturnsAppleSDGothicNeoWithHangulForKorean() {
-        let mappings = GhosttyApp.cjkFontMappings(preferredLanguages: ["ko-KR"])!
-        let fonts = Set(mappings.map(\.1))
-        let ranges = mappings.map(\.0)
-
-        XCTAssertTrue(fonts.contains("Apple SD Gothic Neo"))
-        XCTAssertTrue(ranges.contains("U+AC00-U+D7AF"), "Should include Hangul Syllables")
-        XCTAssertTrue(ranges.contains("U+1100-U+11FF"), "Should include Hangul Jamo")
-        XCTAssertTrue(ranges.contains("U+4E00-U+9FFF"), "Should include CJK Ideographs")
-        XCTAssertFalse(ranges.contains("U+3040-U+309F"), "Should NOT include Hiragana")
+    func testCJKFontMappingsReturnsNilForKoreanOnly() {
+        // Korean is not auto-mapped — Ghostty's native CTFontCreateForString
+        // fallback selects a better-matching font for Hangul.
+        XCTAssertNil(GhosttyApp.cjkFontMappings(preferredLanguages: ["ko-KR"]))
     }
 
     func testCJKFontMappingsReturnsPingFangForChinese() {
@@ -2007,15 +2038,16 @@ final class GhosttyMouseFocusTests: XCTestCase {
         XCTAssertNil(GhosttyApp.cjkFontMappings(preferredLanguages: []))
     }
 
-    func testCJKFontMappingsMultiLanguageMapsScriptSpecificRanges() {
+    func testCJKFontMappingsMultiLanguageSkipsKorean() {
+        // When both ja and ko are preferred, only Japanese mappings are generated.
+        // Korean is left to Ghostty's native CTFontCreateForString fallback.
         let mappings = GhosttyApp.cjkFontMappings(preferredLanguages: ["ja-JP", "ko-KR"])!
 
         let hiraginoRanges = mappings.filter { $0.1 == "Hiragino Sans" }.map(\.0)
-        let sdGothicRanges = mappings.filter { $0.1 == "Apple SD Gothic Neo" }.map(\.0)
 
         XCTAssertTrue(hiraginoRanges.contains("U+3040-U+309F"), "Hiragana → Hiragino")
         XCTAssertTrue(hiraginoRanges.contains("U+4E00-U+9FFF"), "Shared CJK → first lang font")
-        XCTAssertTrue(sdGothicRanges.contains("U+AC00-U+D7AF"), "Hangul → Apple SD Gothic Neo")
+        XCTAssertFalse(mappings.contains { $0.1 == "Apple SD Gothic Neo" }, "No Korean font mapping")
         XCTAssertFalse(hiraginoRanges.contains("U+AC00-U+D7AF"), "Hangul NOT in Hiragino")
     }
 
@@ -2298,6 +2330,20 @@ final class ZshShellIntegrationHandoffTests: XCTestCase {
         XCTAssertTrue(output.contains("PRECMD_BODY="), output)
         XCTAssertTrue(output.contains("PREEXEC_BODY="), output)
         XCTAssertTrue(output.contains("133;A;redraw=last;cl=line"), output)
+    }
+
+    func testShellIntegrationWinchGuardDoesNotPrintSpacerLineOnResize() throws {
+        let output = try runInteractiveZsh(
+            cmuxLoadGhosttyIntegration: false,
+            cmuxLoadShellIntegration: true,
+            command: """
+            print -r -- BEFORE
+            TRAPWINCH
+            print -r -- AFTER
+            """
+        )
+
+        XCTAssertEqual(output, "BEFORE\nAFTER", output)
     }
 
     private func runInteractiveZsh(cmuxLoadGhosttyIntegration: Bool) throws -> String {
