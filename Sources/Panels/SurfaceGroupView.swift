@@ -6,6 +6,7 @@ import Bonsplit
 /// Each leaf node renders a TerminalPanelView; split nodes render a resizable split container.
 struct SurfaceGroupView: View {
     @ObservedObject var group: SurfaceGroup
+    let paneId: PaneID
     let isFocused: Bool
     let isVisibleInUI: Bool
     let portalPriority: Int
@@ -16,6 +17,7 @@ struct SurfaceGroupView: View {
     var body: some View {
         SurfaceGroupSplitNodeView(
             node: group.rootNode,
+            paneId: paneId,
             isFocused: isFocused,
             focusedChildId: group.focusedChildId,
             isVisibleInUI: isVisibleInUI,
@@ -30,6 +32,7 @@ struct SurfaceGroupView: View {
 /// Recursive view that renders a SplitNode tree.
 private struct SurfaceGroupSplitNodeView: View {
     let node: SurfaceGroup.SplitNode
+    let paneId: PaneID
     let isFocused: Bool
     let focusedChildId: UUID?
     let isVisibleInUI: Bool
@@ -43,6 +46,7 @@ private struct SurfaceGroupSplitNodeView: View {
         case .leaf(let panel):
             TerminalPanelView(
                 panel: panel,
+                paneId: paneId,
                 isFocused: isFocused && focusedChildId == panel.id,
                 isVisibleInUI: isVisibleInUI,
                 portalPriority: portalPriority,
@@ -57,6 +61,7 @@ private struct SurfaceGroupSplitNodeView: View {
             SurfaceGroupSplitContainer(orientation: orientation, ratio: ratio, dividerColor: appearance.dividerColor) {
                 SurfaceGroupSplitNodeView(
                     node: first,
+                    paneId: paneId,
                     isFocused: isFocused,
                     focusedChildId: focusedChildId,
                     isVisibleInUI: isVisibleInUI,
@@ -68,6 +73,7 @@ private struct SurfaceGroupSplitNodeView: View {
             } second: {
                 SurfaceGroupSplitNodeView(
                     node: second,
+                    paneId: paneId,
                     isFocused: isFocused,
                     focusedChildId: focusedChildId,
                     isVisibleInUI: isVisibleInUI,

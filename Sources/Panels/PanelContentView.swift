@@ -59,6 +59,7 @@ struct PanelContentView: View {
             if let surfaceGroup = panel as? SurfaceGroup {
                 SurfaceGroupView(
                     group: surfaceGroup,
+                    paneId: paneId,
                     isFocused: isFocused,
                     isVisibleInUI: isVisibleInUI,
                     portalPriority: portalPriority,
