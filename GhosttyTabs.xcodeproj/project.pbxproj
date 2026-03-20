@@ -929,8 +929,8 @@
 					"-framework",
 					Carbon,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.cmuxterm.app.tasty;
-				PRODUCT_NAME = "cmux-tasty";
+				PRODUCT_BUNDLE_IDENTIFIER = com.cmuxterm.app.tasty.dev;
+				PRODUCT_NAME = "cmux-tasty DEV";
 				SPARKLE_PUBLIC_KEY = "avjcgKibf1FTvhIjLBxhd+0HSpsXU4D0IGlVk8cgqRc=";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "cmux-Bridging-Header.h";
