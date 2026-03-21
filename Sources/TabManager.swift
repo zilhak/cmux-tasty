@@ -3080,6 +3080,18 @@ class TabManager: ObservableObject {
         selectedTabId = lastTab.id
     }
 
+    // MARK: - Pane Cycling
+
+    /// Cycle focus to the next pane in the selected workspace
+    func selectNextPane() {
+        selectedWorkspace?.selectNextPane()
+    }
+
+    /// Cycle focus to the previous pane in the selected workspace
+    func selectPreviousPane() {
+        selectedWorkspace?.selectPreviousPane()
+    }
+
     // MARK: - Surface Navigation
 
     /// Select the next surface in the currently focused pane of the selected workspace
