@@ -1505,21 +1505,61 @@ class TerminalController {
     ) {
         let deadline = DispatchTime.now() + .milliseconds(delayMs)
         DispatchQueue.main.asyncAfter(deadline: deadline) { [weak self] in
-            guard let self else { return }
-            let shouldResume = self.withListenerState {
-                guard self.pendingAcceptLoopResumeGeneration == generation else { return false }
+            guard let self else {
+                // Self deallocated while resume was pending — the socket will be
+                // cleaned up by deinit / process exit, but log for diagnostics.
+                print("TerminalController: scheduleAcceptLoopResume fired but self is nil (generation=\(generation))")
+                return
+            }
+
+            enum ResumeDecision {
+                case proceed
+                case zombieDetected(reason: String)
+                case stale
+            }
+
+            let decision: ResumeDecision = self.withListenerState {
+                guard self.pendingAcceptLoopResumeGeneration == generation else { return .stale }
                 guard self.activeAcceptLoopGeneration == generation else {
                     self.pendingAcceptLoopResumeGeneration = nil
-                    return false
+                    return .stale
                 }
+                // Zombie guard: isRunning but socket or state is inconsistent
                 guard self.isRunning, self.serverSocket == listenerSocket else {
                     self.pendingAcceptLoopResumeGeneration = nil
-                    return false
+                    if self.isRunning && self.serverSocket != listenerSocket {
+                        return .zombieDetected(reason: "socket_mismatch")
+                    }
+                    if !self.isRunning {
+                        return .zombieDetected(reason: "not_running")
+                    }
+                    return .stale
                 }
                 self.pendingAcceptLoopResumeGeneration = nil
-                return true
+                return .proceed
             }
-            guard shouldResume else { return }
+
+            switch decision {
+            case .proceed:
+                break
+            case .stale:
+                return
+            case .zombieDetected(let reason):
+                sentryBreadcrumb(
+                    "socket.listener.resume.zombie_cleanup",
+                    category: "socket",
+                    data: self.socketListenerEventData(
+                        stage: "accept_resume_zombie",
+                        errnoCode: errnoCode,
+                        extra: [
+                            "generation": generation,
+                            "reason": reason
+                        ]
+                    )
+                )
+                self.stop()
+                return
+            }
 
             sentryBreadcrumb(
                 "socket.listener.resume.requested",
@@ -1549,13 +1589,58 @@ class TerminalController {
     ) {
         let deadline = DispatchTime.now() + .milliseconds(delayMs)
         DispatchQueue.main.asyncAfter(deadline: deadline) { [weak self] in
-            guard let self else { return }
-            guard let tabManager = self.tabManager else { return }
+            guard let self else {
+                print("TerminalController: scheduleListenerRearm fired but self is nil (generation=\(generation))")
+                return
+            }
+
+            guard let tabManager = self.tabManager else {
+                // tabManager is nil — listener cannot be restarted.
+                // Clean up to prevent zombie state (socket open, isRunning=true,
+                // but no accept loop).
+                sentryBreadcrumb(
+                    "socket.listener.rearm.tabManager_nil",
+                    category: "socket",
+                    data: self.socketListenerEventData(
+                        stage: "accept_rearm_failed",
+                        errnoCode: errnoCode,
+                        extra: [
+                            "generation": generation,
+                            "reason": "tabManager_nil"
+                        ]
+                    )
+                )
+                self.stop()
+                return
+            }
+
             guard let restartPath = self.withListenerState({ () -> String? in
                 guard self.pendingAcceptLoopRearmGeneration == generation else { return nil }
                 self.pendingAcceptLoopRearmGeneration = nil
                 return self.socketPath
-            }) else { return }
+            }) else {
+                // Generation mismatch — a newer listener cycle has taken over,
+                // or the listener was stopped. Check for zombie state.
+                let isZombie = self.withListenerState {
+                    self.isRunning && !self.acceptLoopAlive && self.activeAcceptLoopGeneration == 0
+                }
+                if isZombie {
+                    sentryBreadcrumb(
+                        "socket.listener.rearm.zombie_cleanup",
+                        category: "socket",
+                        data: self.socketListenerEventData(
+                            stage: "accept_rearm_zombie",
+                            errnoCode: errnoCode,
+                            extra: [
+                                "generation": generation,
+                                "reason": "generation_mismatch_zombie"
+                            ]
+                        )
+                    )
+                    self.stop()
+                }
+                return
+            }
 
             let restartMode = self.accessMode
 

@@ -48,14 +48,23 @@ final class WindowObservingView: NSView {
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
         if let newWindow {
-            onWindow?(newWindow)
+            // Defer the callback to avoid re-entrant layout/constraint updates.
+            // During viewWillMove, the window frame is being set up and KVO on
+            // NSHostingView can trigger setNeedsUpdateConstraints: inside a
+            // layout pass, causing an NSInternalInconsistencyException (Debug)
+            // or a silent failure (Release).
+            DispatchQueue.main.async { [weak self] in
+                self?.onWindow?(newWindow)
+            }
         }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let window {
-            onWindow?(window)
+            DispatchQueue.main.async { [weak self] in
+                self?.onWindow?(window)
+            }
         }
     }
 }
