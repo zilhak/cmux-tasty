@@ -2154,6 +2154,156 @@ struct CMUXCLI {
 
             print("OK")
 
+        case "claude-spawn":
+            let (csWsArg, csRem0) = parseOption(commandArgs, name: "--workspace")
+            let (csCwdArg, csRem1) = parseOption(csRem0, name: "--cwd")
+            let (csPromptArg, csRem2) = parseOption(csRem1, name: "--prompt")
+            let (csPromptFileArg, csRem3) = parseOption(csRem2, name: "--prompt-file")
+            let (csOnIdleArg, _) = parseOption(csRem3, name: "--on-idle")
+
+            let csParentSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+            guard let csParentSurface, !csParentSurface.isEmpty else {
+                throw CLIError(message: "claude-spawn requires CMUX_SURFACE_ID (run from inside a cmux terminal)")
+            }
+
+            let csWorkspaceArg = csWsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let csWsId = try normalizeWorkspaceHandle(csWorkspaceArg, client: client)
+
+            var csParams: [String: Any] = ["parent_surface_id": csParentSurface]
+            if let csWsId { csParams["workspace_id"] = csWsId }
+            if let csCwdArg { csParams["cwd"] = resolvePath(csCwdArg) }
+            if let csPromptArg { csParams["prompt"] = csPromptArg }
+            if let csPromptFileArg { csParams["prompt_file_path"] = resolvePath(csPromptFileArg) }
+            if let csOnIdleArg { csParams["on_idle"] = csOnIdleArg }
+
+            let csPayload = try client.sendV2(method: "claude.spawn", params: csParams)
+            if jsonOutput {
+                print(jsonString(csPayload))
+            } else {
+                let childRef = csPayload["child_ref"] as? String ?? "?"
+                let surfaceRef = csPayload["child_surface_ref"] as? String ?? "?"
+                let wsRef = csPayload["workspace_ref"] as? String ?? "?"
+                print("OK \(childRef) \(surfaceRef) \(wsRef)")
+            }
+
+        case "claude-children":
+            let (ccWsArg, ccRem0) = parseOption(commandArgs, name: "--workspace")
+            let (ccSfArg, _) = parseOption(ccRem0, name: "--surface")
+
+            let ccWorkspaceArg = ccWsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let ccSurfaceArg = ccSfArg ?? (ccWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            let ccWsId = try normalizeWorkspaceHandle(ccWorkspaceArg, client: client)
+            guard let ccSfId = try normalizeSurfaceHandle(ccSurfaceArg, client: client, workspaceHandle: ccWsId) else {
+                throw CLIError(message: "claude-children requires --surface or CMUX_SURFACE_ID")
+            }
+
+            var ccParams: [String: Any] = ["surface_id": ccSfId]
+            if let ccWsId { ccParams["workspace_id"] = ccWsId }
+
+            let ccPayload = try client.sendV2(method: "claude.children", params: ccParams)
+            if jsonOutput {
+                print(jsonString(ccPayload))
+            } else {
+                guard let ccChildren = ccPayload["children"] as? [[String: Any]] else {
+                    print("No children")
+                    break
+                }
+                if ccChildren.isEmpty {
+                    print("No children")
+                    break
+                }
+                for child in ccChildren {
+                    let idx = intFromAny(child["index"]) ?? 0
+                    let sRef = child["surface_ref"] as? String ?? "?"
+                    let status = child["status"] as? [String: Any]
+                    let state = status?["state"] as? String ?? "unknown"
+                    let secondsSinceChange = intFromAny(status?["seconds_since_change"]) ?? 0
+                    let lastLines = status?["last_lines"] as? [String] ?? []
+
+                    let timeStr: String
+                    if state == "idle" {
+                        timeStr = "idle"
+                    } else if secondsSinceChange == 0 {
+                        timeStr = "just now"
+                    } else if secondsSinceChange < 60 {
+                        timeStr = "\(secondsSinceChange)s ago"
+                    } else {
+                        timeStr = "\(secondsSinceChange / 60)m \(secondsSinceChange % 60)s ago"
+                    }
+
+                    let preview = lastLines.last ?? "(empty)"
+                    print("child:\(idx)  \(sRef)  \(timeStr)  → \(preview)")
+                }
+            }
+
+        case "claude-parent":
+            let (cpWsArg, cpRem0) = parseOption(commandArgs, name: "--workspace")
+            let (cpSfArg, _) = parseOption(cpRem0, name: "--surface")
+
+            let cpWorkspaceArg = cpWsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let cpSurfaceArg = cpSfArg ?? (cpWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            let cpWsId = try normalizeWorkspaceHandle(cpWorkspaceArg, client: client)
+            guard let cpSfId = try normalizeSurfaceHandle(cpSurfaceArg, client: client, workspaceHandle: cpWsId) else {
+                throw CLIError(message: "claude-parent requires --surface or CMUX_SURFACE_ID")
+            }
+
+            var cpParams: [String: Any] = ["surface_id": cpSfId]
+            if let cpWsId { cpParams["workspace_id"] = cpWsId }
+
+            let cpPayload = try client.sendV2(method: "claude.parent", params: cpParams)
+            if jsonOutput {
+                print(jsonString(cpPayload))
+            } else {
+                if cpPayload["parent"] is NSNull {
+                    print("No parent (this is a root surface)")
+                } else if let parentInfo = cpPayload["parent"] as? [String: Any] {
+                    let parentRef = parentInfo["surface_ref"] as? String ?? "?"
+                    print("parent \(parentRef)")
+                } else {
+                    print("No parent (this is a root surface)")
+                }
+            }
+
+        case "claude-kill":
+            let (ckWsArg, ckRem0) = parseOption(commandArgs, name: "--workspace")
+            let (ckSfArg, ckRem1) = parseOption(ckRem0, name: "--surface")
+
+            let ckWorkspaceArg = ckWsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let ckSurfaceArg = ckSfArg ?? (ckWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            let ckWsId = try normalizeWorkspaceHandle(ckWorkspaceArg, client: client)
+            guard let ckParentSfId = try normalizeSurfaceHandle(ckSurfaceArg, client: client, workspaceHandle: ckWsId) else {
+                throw CLIError(message: "claude-kill requires --surface or CMUX_SURFACE_ID (parent surface)")
+            }
+
+            // Parse target: child:N or surface:N
+            guard let ckTarget = ckRem1.first(where: { !$0.hasPrefix("--") }) else {
+                throw CLIError(message: "claude-kill requires a target (child:<N> or surface:<N>)")
+            }
+
+            var ckParams: [String: Any] = ["parent_surface_id": ckParentSfId]
+            if let ckWsId { ckParams["workspace_id"] = ckWsId }
+
+            let ckLower = ckTarget.lowercased()
+            if ckLower.hasPrefix("child:") {
+                let idxStr = String(ckTarget.dropFirst("child:".count))
+                guard let childIdx = Int(idxStr) else {
+                    throw CLIError(message: "Invalid child reference: \(ckTarget) (expected child:<N>)")
+                }
+                ckParams["child_index"] = childIdx
+            } else if ckLower.hasPrefix("surface:") || isUUID(ckTarget) {
+                ckParams["child_surface_id"] = ckTarget
+            } else {
+                throw CLIError(message: "Invalid target: \(ckTarget) (expected child:<N> or surface:<N>)")
+            }
+
+            let ckPayload = try client.sendV2(method: "claude.kill_child", params: ckParams)
+            if jsonOutput {
+                print(jsonString(ckPayload))
+            } else {
+                let killedRef = ckPayload["child_surface_ref"] as? String ?? "?"
+                print("OK killed \(killedRef)")
+            }
+
         case "surface-hook":
             let shSubcommand = commandArgs.first ?? ""
             let shArgs = commandArgs.dropFirst().map { $0 }
@@ -3104,11 +3254,58 @@ struct CMUXCLI {
 
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return nil }
+
+        // Resolve parent:/child:N aliases via claude.parent / claude.children API
+        if trimmed.lowercased() == "parent:" {
+            let callerSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+            guard let callerSurface, !callerSurface.isEmpty else {
+                throw CLIError(message: "parent: alias requires CMUX_SURFACE_ID environment variable")
+            }
+            let callerRef = isUUID(callerSurface) || isHandleRef(callerSurface) ? callerSurface : "surface:\(callerSurface)"
+            var parentParams: [String: Any] = ["surface_id": callerRef]
+            if let workspaceHandle { parentParams["workspace_id"] = workspaceHandle }
+            let parentPayload = try client.sendV2(method: "claude.parent", params: parentParams)
+            if parentPayload["parent"] is NSNull {
+                throw CLIError(message: "No parent found (this is a root surface)")
+            }
+            guard let parentInfo = parentPayload["parent"] as? [String: Any],
+                  let parentRef = parentInfo["surface_ref"] as? String ?? parentInfo["surface_id"] as? String else {
+                throw CLIError(message: "No parent found (this is a root surface)")
+            }
+            return parentRef
+        }
+
+        let childPrefix = "child:"
+        if trimmed.lowercased().hasPrefix(childPrefix) {
+            let indexStr = String(trimmed.dropFirst(childPrefix.count))
+            guard let childIndex = Int(indexStr) else {
+                throw CLIError(message: "Invalid child alias: \(trimmed) (expected child:<N>)")
+            }
+            let callerSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+            guard let callerSurface, !callerSurface.isEmpty else {
+                throw CLIError(message: "child: alias requires CMUX_SURFACE_ID environment variable")
+            }
+            let callerRef = isUUID(callerSurface) || isHandleRef(callerSurface) ? callerSurface : "surface:\(callerSurface)"
+            var childrenParams: [String: Any] = ["surface_id": callerRef]
+            if let workspaceHandle { childrenParams["workspace_id"] = workspaceHandle }
+            let childrenPayload = try client.sendV2(method: "claude.children", params: childrenParams)
+            guard let children = childrenPayload["children"] as? [[String: Any]] else {
+                throw CLIError(message: "No children found for current surface")
+            }
+            guard let match = children.first(where: { intFromAny($0["index"]) == childIndex }) else {
+                throw CLIError(message: "Child index \(childIndex) not found")
+            }
+            guard let childRef = match["surface_ref"] as? String ?? match["surface_id"] as? String else {
+                throw CLIError(message: "Child index \(childIndex) has no surface reference")
+            }
+            return childRef
+        }
+
         if isUUID(trimmed) || isHandleRef(trimmed) {
             return trimmed
         }
         guard let wantedIndex = Int(trimmed) else {
-            throw CLIError(message: "Invalid surface handle: \(trimmed) (expected UUID, ref like surface:1, or index)")
+            throw CLIError(message: "Invalid surface handle: \(trimmed) (expected UUID, ref like surface:1, child:N, parent:, or index)")
         }
 
         var params: [String: Any] = [:]
@@ -7068,6 +7265,90 @@ struct CMUXCLI {
             Example:
               cmux claude-run --surface surface:4 --cwd ~/project --prompt "fix the build errors"
               cmux claude-run --surface surface:4 --prompt-file /tmp/task.md
+            """
+        case "claude-spawn":
+            return """
+            Usage: cmux claude-spawn [flags]
+
+            Spawn a new Claude Code child from the current surface. Creates a split,
+            launches claude, and optionally sends a prompt. This is the higher-level
+            counterpart to claude-run which manages parent-child relationships.
+
+            The parent surface is automatically set to $CMUX_SURFACE_ID.
+
+            Flags:
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+              --cwd <path>           Working directory for the child
+              --prompt <text>        Prompt to send after Claude starts
+              --prompt-file <path>   File containing the prompt
+              --on-idle <action>     Action on idle: notify-parent | none (default: none)
+
+            Output (plain):
+              OK child:1 surface:5 workspace:2
+
+            Example:
+              cmux claude-spawn --prompt "fix the build errors"
+              cmux claude-spawn --cwd ~/project --prompt-file /tmp/task.md --on-idle notify-parent
+              cmux claude-spawn --json
+            """
+        case "claude-children":
+            return """
+            Usage: cmux claude-children [flags]
+
+            List Claude child surfaces spawned from a parent surface.
+
+            Flags:
+              --surface <id|ref>     Parent surface (default: $CMUX_SURFACE_ID)
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+
+            Output (plain):
+              child:1  surface:5  3s ago   → last output line
+              child:2  surface:6  idle     → last output line
+
+            Example:
+              cmux claude-children
+              cmux claude-children --surface surface:3
+              cmux claude-children --json
+            """
+        case "claude-parent":
+            return """
+            Usage: cmux claude-parent [flags]
+
+            Show the parent surface of the current (child) surface.
+
+            Flags:
+              --surface <id|ref>     Child surface (default: $CMUX_SURFACE_ID)
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+
+            Output (plain):
+              parent surface:1
+
+            If no parent exists:
+              No parent (this is a root surface)
+
+            Example:
+              cmux claude-parent
+              cmux claude-parent --surface surface:5
+              cmux claude-parent --json
+            """
+        case "claude-kill":
+            return """
+            Usage: cmux claude-kill <child:N | surface:N> [flags]
+
+            Kill a Claude child surface. Specify the target by child index or surface ref.
+
+            Arguments:
+              <child:N | surface:N>  Child to kill (child:1, surface:5, etc.)
+
+            Flags:
+              --surface <id|ref>     Parent surface (default: $CMUX_SURFACE_ID)
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+
+            Example:
+              cmux claude-kill child:1
+              cmux claude-kill surface:5
+              cmux claude-kill child:2 --surface surface:3
+              cmux claude-kill child:1 --json
             """
         case "surface-hook":
             return """
@@ -11522,6 +11803,7 @@ struct CMUXCLI {
         Handle Inputs:
           Use UUIDs, short refs (window:1/workspace:2/pane:3/surface:4), or indexes where commands accept window, workspace, pane, or surface inputs.
           `tab-action` also accepts `tab:<n>` in addition to `surface:<n>`.
+          Surface aliases: `parent:` resolves to the parent surface, `child:<N>` resolves to the Nth child surface (via claude parent-child API).
           Output defaults to refs; pass --id-format uuids or --id-format both to include UUIDs.
 
         Socket Auth:
@@ -11576,6 +11858,10 @@ struct CMUXCLI {
           set-mark [--workspace <id|ref>] [--surface <id|ref>]
           read-since-mark [--workspace <id|ref>] [--surface <id|ref>] [--clear]
           claude-status [--workspace <id|ref>] [--lines <n>]
+          claude-spawn [--workspace <ref>] [--cwd <path>] [--prompt <text>] [--prompt-file <path>] [--on-idle notify-parent|none]
+          claude-children [--surface <ref>] [--workspace <ref>]
+          claude-parent [--surface <ref>] [--workspace <ref>]
+          claude-kill <child:N | surface:N> [--surface <ref>] [--workspace <ref>]
           surface-hook set --surface <ref> --event <event> --command <cmd> [--workspace <ref>]
           surface-hook list --surface <ref> [--event <event>] [--workspace <ref>]
           surface-hook unset --hook-id <uuid>

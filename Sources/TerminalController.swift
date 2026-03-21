@@ -201,6 +201,21 @@ class TerminalController {
     /// Surfaces that are currently in "busy" state (content actively changing).
     /// Used to detect busy→idle transitions for the claude-idle hook.
     private var surfaceClaudeBusy: Set<UUID> = []
+
+    // MARK: - Claude Parent-Child Tracking
+    private struct ClaudeChildEntry {
+        let childSurfaceId: UUID
+        let index: Int
+        let cwd: String?
+        let createdAt: Date
+    }
+    /// Parent surface ID → [Child entries]
+    private var claudeParentChildMap: [UUID: [ClaudeChildEntry]] = [:]
+    /// Child surface ID → Parent surface ID (reverse lookup)
+    private var claudeChildParentMap: [UUID: UUID] = [:]
+    /// Next child index counter per parent
+    private var claudeNextChildIndex: [UUID: Int] = [:]
+
     private var v2BrowserFrameSelectorBySurface: [UUID: String] = [:]
     private var v2BrowserInitScriptsBySurface: [UUID: [String]] = [:]
     private var v2BrowserInitStylesBySurface: [UUID: [String]] = [:]
@@ -2461,6 +2476,15 @@ class TerminalController {
         case "workspace.claude_activity":
             return v2Result(id: id, self.v2WorkspaceClaudeActivity(params: params))
 
+        // Claude parent-child
+        case "claude.spawn":
+            return v2Result(id: id, self.v2ClaudeSpawn(params: params))
+        case "claude.children":
+            return v2Result(id: id, self.v2ClaudeChildren(params: params))
+        case "claude.parent":
+            return v2Result(id: id, self.v2ClaudeParent(params: params))
+        case "claude.kill_child":
+            return v2Result(id: id, self.v2ClaudeKillChild(params: params))
 
 #if DEBUG
         // Debug / test-only
@@ -2586,6 +2610,10 @@ class TerminalController {
             "surface.set_read_mark",
             "surface.read_since_mark",
             "workspace.claude_activity",
+            "claude.spawn",
+            "claude.children",
+            "claude.parent",
+            "claude.kill_child",
             "surface.clear_history",
             "surface.trigger_flash",
             "surface.set_hook",
@@ -4363,6 +4391,7 @@ class TerminalController {
                         break
                     }
                     if workspace.closePanel(panelId, force: true) {
+                        claudeCleanupOnSurfaceClose(panelId)
                         closed += 1
                     }
                 }
@@ -4816,6 +4845,7 @@ class TerminalController {
 
             // Socket API must be non-interactive: bypass close-confirmation gating.
             ws.closePanel(surfaceId, force: true)
+            claudeCleanupOnSurfaceClose(surfaceId)
             result = .ok(["workspace_id": ws.id.uuidString, "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id), "surface_id": surfaceId.uuidString, "surface_ref": v2Ref(kind: .surface, uuid: surfaceId), "window_id": v2OrNull(v2ResolveWindowId(tabManager: tabManager)?.uuidString), "window_ref": v2Ref(kind: .window, uuid: v2ResolveWindowId(tabManager: tabManager))])
         }
         return result
@@ -5812,6 +5842,328 @@ class TerminalController {
             ])
         }
         return result
+    }
+
+    // MARK: - Claude Parent-Child Methods
+
+    private func v2ClaudeSpawn(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let parentSurfaceId = v2UUID(params, "parent_surface_id") else {
+            return .err(code: "invalid_params", message: "Missing parent_surface_id", data: nil)
+        }
+
+        let cwd = v2String(params, "cwd")
+        let prompt = v2String(params, "prompt")
+        let promptFilePath = v2String(params, "prompt_file_path")
+        let onIdle = v2String(params, "on_idle") ?? "none"
+
+        // Resolve workspace: prefer explicit workspace_id, then find workspace containing parent surface
+        var result: V2CallResult = .err(code: "internal_error", message: "Failed to spawn claude", data: nil)
+
+        // Step 1: Create a new split surface next to the parent
+        var newSurfaceId: UUID?
+        var resolvedWs: Workspace?
+        var resolvedWindowId: UUID?
+        v2MainSync {
+            let ws: Workspace?
+            if let wsId = v2UUID(params, "workspace_id") {
+                ws = tabManager.tabs.first(where: { $0.id == wsId })
+            } else {
+                ws = tabManager.tabs.first(where: { $0.panels[parentSurfaceId] != nil })
+            }
+            guard let ws else {
+                result = .err(code: "not_found", message: "Workspace not found", data: nil)
+                return
+            }
+            guard ws.panels[parentSurfaceId] != nil else {
+                result = .err(code: "not_found", message: "Parent surface not found", data: ["surface_id": parentSurfaceId.uuidString])
+                return
+            }
+            resolvedWs = ws
+            resolvedWindowId = v2ResolveWindowId(tabManager: tabManager)
+
+            // Split right from parent
+            if let nid = tabManager.newSplit(tabId: ws.id, surfaceId: parentSurfaceId, direction: .right) {
+                newSurfaceId = nid
+            }
+        }
+
+        guard let childSurfaceId = newSurfaceId, let ws = resolvedWs else {
+            if case .err = result { return result }
+            return .err(code: "internal_error", message: "Failed to create split surface", data: nil)
+        }
+
+        // Step 2: Register parent-child relationship
+        let childIndex = claudeNextChildIndex[parentSurfaceId, default: 1]
+        claudeNextChildIndex[parentSurfaceId] = childIndex + 1
+
+        let entry = ClaudeChildEntry(
+            childSurfaceId: childSurfaceId,
+            index: childIndex,
+            cwd: cwd,
+            createdAt: Date()
+        )
+        claudeParentChildMap[parentSurfaceId, default: []].append(entry)
+        claudeChildParentMap[childSurfaceId] = parentSurfaceId
+
+        // Step 3: Wait for terminal surface to be ready, then send commands
+        var terminalPanel: TerminalPanel?
+        v2MainSync {
+            terminalPanel = ws.terminalPanel(for: childSurfaceId)
+        }
+
+        guard let tp = terminalPanel else {
+            return .err(code: "internal_error", message: "Child surface is not a terminal", data: nil)
+        }
+
+        // Wait for the terminal surface to be ready
+        let surface = waitForTerminalSurface(tp, waitUpTo: 5.0)
+        guard let surface else {
+            return .err(code: "timeout", message: "Terminal surface did not become ready", data: nil)
+        }
+
+        // Step 4: cd to cwd if provided, then launch claude
+        if let cwd {
+            sendSocketText("cd \(cwd)\n", surface: surface)
+            // Small delay for cd to complete
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+
+        sendSocketText("claude --dangerously-skip-permissions\n", surface: surface)
+
+        // Step 5: Poll for ❯ prompt (max 30 seconds)
+        let pollStart = Date()
+        let maxWait: TimeInterval = 30.0
+        var promptReady = false
+
+        while Date().timeIntervalSince(pollStart) < maxWait {
+            Thread.sleep(forTimeInterval: 0.5)
+            let response = v2MainSync {
+                readTerminalTextBase64(terminalPanel: tp, includeScrollback: false)
+            }
+            if response.hasPrefix("OK ") {
+                let base64 = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+                if let text = Data(base64Encoded: base64).flatMap({ String(data: $0, encoding: .utf8) }) {
+                    if text.contains("❯") {
+                        promptReady = true
+                        break
+                    }
+                }
+            }
+        }
+
+        guard promptReady else {
+            return .err(code: "timeout", message: "Claude prompt (❯) not detected within 30 seconds", data: [
+                "child_surface_id": childSurfaceId.uuidString,
+                "child_surface_ref": v2Ref(kind: .surface, uuid: childSurfaceId)
+            ])
+        }
+
+        // Step 6: Send prompt if provided
+        if let promptFilePath {
+            sendSocketText("/oh-my-claudecode:skill prompt_file_path=\(promptFilePath)", surface: surface)
+            Thread.sleep(forTimeInterval: 1.0)
+            sendSocketText("\n", surface: surface)
+        } else if let prompt {
+            sendSocketText(prompt, surface: surface)
+            Thread.sleep(forTimeInterval: 1.0)
+            sendSocketText("\n", surface: surface)
+        }
+
+        // Step 7: Register claude-idle hook if on_idle == "notify-parent"
+        if onIdle == "notify-parent" {
+            let parentRef = v2MainSync { v2Ref(kind: .surface, uuid: parentSurfaceId) }
+            let parentRefStr = (parentRef as? String) ?? parentSurfaceId.uuidString
+            let socketPath = self.socketPath
+            let hookCommand = """
+                echo '{"method":"surface.send_text","params":{"surface_id":"\(parentSurfaceId.uuidString)","text":"\\nChild child:\(childIndex) (surface \(childSurfaceId.uuidString.prefix(8))) idle 전환됨. 상태 점검하라.\\n"}}' | nc -U \(socketPath)
+                """
+            SurfaceHookManager.shared.setHook(
+                surfaceId: childSurfaceId,
+                event: .claudeIdle,
+                command: hookCommand
+            )
+        }
+
+        let childRef = v2Ref(kind: .surface, uuid: childSurfaceId)
+
+        result = .ok([
+            "child_surface_id": childSurfaceId.uuidString,
+            "child_surface_ref": childRef,
+            "child_ref": "child:\(childIndex)",
+            "child_index": childIndex,
+            "parent_surface_id": parentSurfaceId.uuidString,
+            "parent_surface_ref": v2Ref(kind: .surface, uuid: parentSurfaceId),
+            "workspace_id": ws.id.uuidString,
+            "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+            "window_id": v2OrNull(resolvedWindowId?.uuidString),
+            "window_ref": v2Ref(kind: .window, uuid: resolvedWindowId)
+        ])
+        return result
+    }
+
+    private func v2ClaudeChildren(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+
+        let children = claudeParentChildMap[surfaceId] ?? []
+
+        var childrenResult: [[String: Any]] = []
+        v2MainSync {
+            for entry in children {
+                let childId = entry.childSurfaceId
+                // Try to get claude-status info for the child
+                var status: [String: Any] = [:]
+                if let ws = tabManager.tabs.first(where: { $0.panels[childId] != nil }),
+                   let tp = ws.terminalPanel(for: childId) {
+                    let response = readTerminalTextBase64(terminalPanel: tp, includeScrollback: true)
+                    if response.hasPrefix("OK ") {
+                        let base64 = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if let text = Data(base64Encoded: base64).flatMap({ String(data: $0, encoding: .utf8) }) {
+                            var lines = text.components(separatedBy: "\n")
+                            while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                                lines.removeLast()
+                            }
+                            if !lines.isEmpty { lines.removeLast() }
+                            let lastNonEmpty = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+                            let isIdle = lastNonEmpty?.contains("❯") == true
+                            let now = Date()
+                            let prevSnapshot = surfaceActivitySnapshots[childId]
+                            let secondsSinceChange: Double
+                            if let prev = prevSnapshot {
+                                secondsSinceChange = now.timeIntervalSince(prev.timestamp)
+                            } else {
+                                secondsSinceChange = 0
+                            }
+                            let lastLines = Array(lines.suffix(5))
+                                .map { $0.trimmingCharacters(in: .whitespaces) }
+                                .filter { !$0.isEmpty }
+                            status = [
+                                "state": isIdle ? "idle" : "busy",
+                                "seconds_since_change": Int(secondsSinceChange),
+                                "last_lines": lastLines
+                            ]
+                        }
+                    }
+                }
+
+                childrenResult.append([
+                    "index": entry.index,
+                    "surface_id": childId.uuidString,
+                    "surface_ref": v2Ref(kind: .surface, uuid: childId),
+                    "cwd": v2OrNull(entry.cwd),
+                    "created_at": ISO8601DateFormatter().string(from: entry.createdAt),
+                    "status": status.isEmpty ? NSNull() : status
+                ])
+            }
+        }
+
+        return .ok([
+            "parent_surface_id": surfaceId.uuidString,
+            "parent_surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+            "children": childrenResult,
+            "count": childrenResult.count
+        ])
+    }
+
+    private func v2ClaudeParent(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+
+        guard let parentId = claudeChildParentMap[surfaceId] else {
+            return .ok([
+                "surface_id": surfaceId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+                "parent": NSNull()
+            ])
+        }
+
+        return .ok([
+            "surface_id": surfaceId.uuidString,
+            "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+            "parent": [
+                "surface_id": parentId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: parentId)
+            ]
+        ])
+    }
+
+    private func v2ClaudeKillChild(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let parentSurfaceId = v2UUID(params, "parent_surface_id") else {
+            return .err(code: "invalid_params", message: "Missing parent_surface_id", data: nil)
+        }
+
+        // Resolve which child to kill
+        let childSurfaceId: UUID?
+        if let cid = v2UUID(params, "child_surface_id") {
+            childSurfaceId = cid
+        } else if let childIndex = v2Int(params, "child_index") {
+            childSurfaceId = claudeParentChildMap[parentSurfaceId]?.first(where: { $0.index == childIndex })?.childSurfaceId
+        } else {
+            return .err(code: "invalid_params", message: "Missing child_surface_id or child_index", data: nil)
+        }
+
+        guard let childSurfaceId else {
+            return .err(code: "not_found", message: "Child not found", data: nil)
+        }
+
+        // Close the child surface
+        var result: V2CallResult = .err(code: "internal_error", message: "Failed to close child surface", data: nil)
+        v2MainSync {
+            guard let ws = tabManager.tabs.first(where: { $0.panels[childSurfaceId] != nil }) else {
+                result = .err(code: "not_found", message: "Child surface not found in any workspace", data: nil)
+                return
+            }
+            ws.closePanel(childSurfaceId, force: true)
+
+            // Clean up parent-child relationship
+            claudeParentChildMap[parentSurfaceId]?.removeAll(where: { $0.childSurfaceId == childSurfaceId })
+            if claudeParentChildMap[parentSurfaceId]?.isEmpty == true {
+                claudeParentChildMap.removeValue(forKey: parentSurfaceId)
+            }
+            claudeChildParentMap.removeValue(forKey: childSurfaceId)
+
+            // Clean up hooks
+            SurfaceHookManager.shared.removeAllHooks(surfaceId: childSurfaceId)
+
+            result = .ok([
+                "parent_surface_id": parentSurfaceId.uuidString,
+                "parent_surface_ref": v2Ref(kind: .surface, uuid: parentSurfaceId),
+                "child_surface_id": childSurfaceId.uuidString,
+                "child_surface_ref": v2Ref(kind: .surface, uuid: childSurfaceId),
+                "killed": true
+            ])
+        }
+        return result
+    }
+
+    /// Clean up claude parent-child relationships when a surface is closed.
+    private func claudeCleanupOnSurfaceClose(_ surfaceId: UUID) {
+        // If this surface was a parent, remove all children's parent references
+        if let children = claudeParentChildMap.removeValue(forKey: surfaceId) {
+            for child in children {
+                claudeChildParentMap.removeValue(forKey: child.childSurfaceId)
+            }
+            claudeNextChildIndex.removeValue(forKey: surfaceId)
+        }
+
+        // If this surface was a child, remove from parent's children list
+        if let parentId = claudeChildParentMap.removeValue(forKey: surfaceId) {
+            claudeParentChildMap[parentId]?.removeAll(where: { $0.childSurfaceId == surfaceId })
+            if claudeParentChildMap[parentId]?.isEmpty == true {
+                claudeParentChildMap.removeValue(forKey: parentId)
+            }
+        }
     }
 
     private func readTerminalTextBase64(terminalPanel: TerminalPanel, includeScrollback: Bool = false, lineLimit: Int? = nil) -> String {
@@ -10233,6 +10585,7 @@ class TerminalController {
             }
 
             let ok = ws.closePanel(targetId, force: true)
+            if ok { claudeCleanupOnSurfaceClose(targetId) }
             result = ok
                 ? .ok([
                     "workspace_id": ws.id.uuidString,
@@ -15611,6 +15964,7 @@ class TerminalController {
 
             // Socket commands must be non-interactive: bypass close-confirmation gating.
             tab.closePanel(targetSurfaceId, force: true)
+            claudeCleanupOnSurfaceClose(targetSurfaceId)
             result = "OK"
         }
         return result
