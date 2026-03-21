@@ -11,6 +11,7 @@ final class SurfaceHookManager {
     /// Supported hook event types.
     enum Event: String, CaseIterable {
         case processExit = "process-exit"
+        case claudeIdle = "claude-idle"
     }
 
     /// A registered hook entry.
