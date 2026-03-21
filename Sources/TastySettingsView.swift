@@ -1188,6 +1188,8 @@ struct TastyShortcutsSettingsSection: View {
 
     @AppStorage(ShortcutHintDebugSettings.showHintsOnCommandHoldKey)
     private var showShortcutHintsOnCommandHold = ShortcutHintDebugSettings.defaultShowHintsOnCommandHold
+    @AppStorage(NumberShortcutModifierSettings.swappedKey)
+    private var numberShortcutModifierSwapped = NumberShortcutModifierSettings.defaultSwapped
 
     @State private var shortcutResetToken = UUID()
     @State private var selectedTab: ShortcutTab = .general
@@ -1202,6 +1204,17 @@ struct TastyShortcutsSettingsSection: View {
                     : String(localized: "settings.shortcuts.showHints.subtitleOff", defaultValue: "Holding Cmd or Ctrl keeps shortcut hint pills hidden.")
             ) {
                 Toggle("", isOn: $showShortcutHintsOnCommandHold)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
+            SettingsCardDivider()
+            SettingsCardRow(
+                String(localized: "settings.shortcuts.swapNumberModifiers", defaultValue: "Swap Cmd/Ctrl Number Shortcuts"),
+                subtitle: numberShortcutModifierSwapped
+                    ? String(localized: "settings.shortcuts.swapNumberModifiers.subtitleOn", defaultValue: "Ctrl+1…9 switches workspaces, Cmd+1…9 switches panes.")
+                    : String(localized: "settings.shortcuts.swapNumberModifiers.subtitleOff", defaultValue: "Cmd+1…9 switches workspaces, Ctrl+1…9 switches panes.")
+            ) {
+                Toggle("", isOn: $numberShortcutModifierSwapped)
                     .labelsHidden()
                     .controlSize(.small)
             }

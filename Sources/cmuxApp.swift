@@ -87,6 +87,15 @@ enum WorkspaceButtonFadeSettings {
     }
 }
 
+enum NumberShortcutModifierSettings {
+    static let swappedKey = "numberShortcutModifierSwapped"
+    static let defaultSwapped = false
+
+    static func isSwapped(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: swappedKey) as? Bool ?? defaultSwapped
+    }
+}
+
 enum PaneFirstClickFocusSettings {
     static let enabledKey = "paneFirstClickFocus.enabled"
     static let defaultEnabled = false
@@ -146,6 +155,7 @@ struct cmuxApp: App {
     @AppStorage(DevBuildBannerDebugSettings.sidebarBannerVisibleKey)
     private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
     @AppStorage(SocketControlSettings.appStorageKey) private var socketControlMode = SocketControlSettings.defaultMode.rawValue
+    @AppStorage(NumberShortcutModifierSettings.swappedKey) private var numberShortcutModifierSwapped = NumberShortcutModifierSettings.defaultSwapped
     @AppStorage(KeyboardShortcutSettings.Action.toggleSidebar.defaultsKey) private var toggleSidebarShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.newTab.defaultsKey) private var newWorkspaceShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.newWindow.defaultsKey) private var newWindowShortcutData = Data()
@@ -800,6 +810,7 @@ struct cmuxApp: App {
                 Divider()
 
                 // Cmd+1 through Cmd+9 for workspace selection (9 = last workspace)
+                // When numberShortcutModifierSwapped is true, uses Ctrl instead of Cmd.
                 ForEach(1...9, id: \.self) { number in
                     Button(String(localized: "menu.view.workspace", defaultValue: "Workspace \(number)")) {
                         let manager = activeTabManager
@@ -807,7 +818,7 @@ struct cmuxApp: App {
                             manager.selectTab(at: targetIndex)
                         }
                     }
-                    .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: .command)
+                    .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: numberShortcutModifierSwapped ? .control : .command)
                 }
 
                 Divider()

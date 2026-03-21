@@ -9468,7 +9468,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         // Numeric shortcuts for specific sidebar tabs: Cmd+1-9 (9 = last workspace)
-        if flags == [.command],
+        // When modifier is swapped, Ctrl+1-9 selects workspaces instead.
+        let swapped = NumberShortcutModifierSettings.isSwapped()
+        let workspaceModifier: NSEvent.ModifierFlags = swapped ? [.control] : [.command]
+        let paneModifier: NSEvent.ModifierFlags = swapped ? [.command] : [.control]
+
+        if flags == workspaceModifier,
            let manager = tabManager,
            let num = Int(chars),
            let targetIndex = WorkspaceShortcutMapper.workspaceIndex(forCommandDigit: num, workspaceCount: manager.tabs.count) {
@@ -9482,7 +9487,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         // Numeric shortcuts for surfaces within pane: Ctrl+1-9 (9 = last)
-        if flags == [.control] {
+        // When modifier is swapped, Cmd+1-9 selects surfaces instead.
+        if flags == paneModifier {
             if let num = Int(chars), num >= 1 && num <= 9 {
                 if num == 9 {
                     tabManager?.selectLastSurface()
