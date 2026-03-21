@@ -6212,18 +6212,29 @@ private struct SettingsRootView: View {
     @State private var selectedTab: SettingsTab = .tasty
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            TastySettingsView()
-                .tabItem {
-                    Label("Tasty", systemImage: "star")
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Picker("", selection: $selectedTab) {
+                    Label("Tasty", systemImage: "star").tag(SettingsTab.tasty)
+                    Label("Origin", systemImage: "arrow.triangle.branch").tag(SettingsTab.origin)
                 }
-                .tag(SettingsTab.tasty)
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .padding(.trailing, 12)
+                .padding(.vertical, 8)
+            }
 
-            SettingsView()
-                .tabItem {
-                    Label("Origin", systemImage: "arrow.triangle.branch")
+            Group {
+                switch selectedTab {
+                case .tasty:
+                    TastySettingsView()
+                case .origin:
+                    SettingsView()
                 }
-                .tag(SettingsTab.origin)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(WindowAccessor { window in
             configureSettingsWindow(window)
