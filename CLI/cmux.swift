@@ -2154,6 +2154,87 @@ struct CMUXCLI {
 
             print("OK")
 
+        case "surface-hook":
+            let shSubcommand = commandArgs.first ?? ""
+            let shArgs = commandArgs.dropFirst().map { $0 }
+            switch shSubcommand {
+            case "set":
+                let (shWsArg, shRem0) = parseOption(shArgs, name: "--workspace")
+                let (shSfArg, shRem1) = parseOption(shRem0, name: "--surface")
+                let (shEventArg, shRem2) = parseOption(shRem1, name: "--event")
+                let (shCmdArg, _) = parseOption(shRem2, name: "--command")
+                guard let shEventArg else {
+                    throw CLIError(message: "surface-hook set requires --event")
+                }
+                guard let shCmdArg else {
+                    throw CLIError(message: "surface-hook set requires --command")
+                }
+                let shWorkspaceArg = shWsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+                let shSurfaceArg = shSfArg ?? (shWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+                let shWsId = try normalizeWorkspaceHandle(shWorkspaceArg, client: client)
+                guard let shSfId = try normalizeSurfaceHandle(shSurfaceArg, client: client, workspaceHandle: shWsId) else {
+                    throw CLIError(message: "surface-hook set requires --surface")
+                }
+                var shParams: [String: Any] = ["surface_id": shSfId, "event": shEventArg, "command": shCmdArg]
+                if let shWsId { shParams["workspace_id"] = shWsId }
+                let shSetPayload = try client.sendV2(method: "surface.set_hook", params: shParams)
+                if jsonOutput {
+                    print(jsonString(shSetPayload))
+                } else {
+                    let hookId = shSetPayload["hook_id"] as? String ?? shSetPayload["id"] as? String ?? ""
+                    print("hook_id: \(hookId)")
+                }
+
+            case "list":
+                let (shWsArg, shRem0) = parseOption(shArgs, name: "--workspace")
+                let (shSfArg, shRem1) = parseOption(shRem0, name: "--surface")
+                let (shEventArg, _) = parseOption(shRem1, name: "--event")
+                let shWorkspaceArg = shWsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+                let shSurfaceArg = shSfArg ?? (shWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+                let shWsId = try normalizeWorkspaceHandle(shWorkspaceArg, client: client)
+                guard let shSfId = try normalizeSurfaceHandle(shSurfaceArg, client: client, workspaceHandle: shWsId) else {
+                    throw CLIError(message: "surface-hook list requires --surface")
+                }
+                var shParams: [String: Any] = ["surface_id": shSfId]
+                if let shWsId { shParams["workspace_id"] = shWsId }
+                if let shEventArg { shParams["event"] = shEventArg }
+                let shListPayload = try client.sendV2(method: "surface.list_hooks", params: shParams)
+                if jsonOutput {
+                    print(jsonString(shListPayload))
+                } else {
+                    let hooks = shListPayload["hooks"] as? [[String: Any]] ?? []
+                    if hooks.isEmpty {
+                        print("No hooks configured")
+                    } else {
+                        for hook in hooks {
+                            let id = hook["hook_id"] as? String ?? hook["id"] as? String ?? "?"
+                            let event = hook["event"] as? String ?? "?"
+                            let cmd = hook["command"] as? String ?? "?"
+                            print("\(id)  \(event)  \(cmd)")
+                        }
+                    }
+                }
+
+            case "unset":
+                let (shHookIdArg, _) = parseOption(shArgs, name: "--hook-id")
+                guard let shHookIdArg else {
+                    throw CLIError(message: "surface-hook unset requires --hook-id")
+                }
+                let shUnsetPayload = try client.sendV2(method: "surface.unset_hook", params: ["hook_id": shHookIdArg])
+                if jsonOutput {
+                    print(jsonString(shUnsetPayload))
+                } else {
+                    print("OK")
+                }
+
+            default:
+                if shSubcommand.isEmpty {
+                    throw CLIError(message: "surface-hook requires a subcommand: set, list, unset")
+                } else {
+                    throw CLIError(message: "Unknown surface-hook subcommand: \(shSubcommand)")
+                }
+            }
+
         case "send":
             let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
             let (sfArg, rem1) = parseOption(rem0, name: "--surface")
@@ -6988,6 +7069,31 @@ struct CMUXCLI {
               cmux claude-run --surface surface:4 --cwd ~/project --prompt "fix the build errors"
               cmux claude-run --surface surface:4 --prompt-file /tmp/task.md
             """
+        case "surface-hook":
+            return """
+            Usage: cmux surface-hook <set|list|unset> [flags]
+
+            Manage per-surface event hooks. Supported events: process-exit, claude-idle.
+
+            Subcommands:
+              set    --surface <ref> --event <event> --command <cmd> [--workspace <ref>]
+                     Register a hook. Prints hook_id on success.
+              list   --surface <ref> [--event <event>] [--workspace <ref>]
+                     List registered hooks for a surface.
+              unset  --hook-id <uuid>
+                     Remove a hook by its ID.
+
+            Flags (set / list):
+              --surface <id|ref>     Target surface (required or $CMUX_SURFACE_ID)
+              --workspace <id|ref>   Workspace context (default: $CMUX_WORKSPACE_ID)
+              --event <event>        Event name: process-exit, claude-idle
+
+            Example:
+              cmux surface-hook set --surface surface:2 --event process-exit --command "cmux notify --title done"
+              cmux surface-hook list --surface surface:2
+              cmux surface-hook list --surface surface:2 --event claude-idle
+              cmux surface-hook unset --hook-id <uuid>
+            """
         case "send":
             return """
             Usage: cmux send [flags] [--] <text>
@@ -11470,6 +11576,9 @@ struct CMUXCLI {
           set-mark [--workspace <id|ref>] [--surface <id|ref>]
           read-since-mark [--workspace <id|ref>] [--surface <id|ref>] [--clear]
           claude-status [--workspace <id|ref>] [--lines <n>]
+          surface-hook set --surface <ref> --event <event> --command <cmd> [--workspace <ref>]
+          surface-hook list --surface <ref> [--event <event>] [--workspace <ref>]
+          surface-hook unset --hook-id <uuid>
           send [--workspace <id|ref>] [--surface <id|ref>] <text>
           send-key [--workspace <id|ref>] [--surface <id|ref>] <key>
           send-panel --panel <id|ref> [--workspace <id|ref>] <text>
