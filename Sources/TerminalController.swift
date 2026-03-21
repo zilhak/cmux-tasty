@@ -198,6 +198,9 @@ class TerminalController {
         let timestamp: Date
     }
     private var surfaceActivitySnapshots: [UUID: SurfaceActivitySnapshot] = [:]
+    /// Surfaces that are currently in "busy" state (content actively changing).
+    /// Used to detect busy→idle transitions for the claude-idle hook.
+    private var surfaceClaudeBusy: Set<UUID> = []
     private var v2BrowserFrameSelectorBySurface: [UUID: String] = [:]
     private var v2BrowserInitScriptsBySurface: [UUID: [String]] = [:]
     private var v2BrowserInitStylesBySurface: [UUID: [String]] = [:]
@@ -5771,6 +5774,20 @@ class TerminalController {
                 let lastLines = Array(lines.suffix(linesCount))
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
+
+                // Detect busy→idle transition for claude-idle hook.
+                // Claude Code shows ❯ prompt when idle. We only fire on the
+                // transition from busy (content was changing) to idle (stable with prompt).
+                let lastNonEmptyLine = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+                let hasIdlePrompt = lastNonEmptyLine?.contains("❯") == true
+                if secondsSinceChange == 0 {
+                    // Content just changed — mark as busy
+                    surfaceClaudeBusy.insert(panelId)
+                } else if hasIdlePrompt && surfaceClaudeBusy.contains(panelId) {
+                    // Content stable with ❯ prompt and was previously busy — fire hook
+                    surfaceClaudeBusy.remove(panelId)
+                    SurfaceHookManager.shared.fire(event: .claudeIdle, surfaceId: panelId)
+                }
 
                 let title = ws.panelTitle(panelId: panelId) ?? terminalPanel.displayTitle
 
