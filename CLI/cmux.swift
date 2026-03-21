@@ -2075,6 +2075,85 @@ struct CMUXCLI {
                 }
             }
 
+        case "claude-run":
+            let (crWsArg, crRem0) = parseOption(commandArgs, name: "--workspace")
+            let (crSfArg, crRem1) = parseOption(crRem0, name: "--surface")
+            let (crCwdArg, crRem2) = parseOption(crRem1, name: "--cwd")
+            let (crPromptFileArg, crRem3) = parseOption(crRem2, name: "--prompt-file")
+            let (crPromptArg, crRem4) = parseOption(crRem3, name: "--prompt")
+            let (crTimeoutArg, _) = parseOption(crRem4, name: "--timeout")
+
+            let crWorkspaceArg = crWsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let crSurfaceArg = crSfArg ?? (crWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+
+            // Resolve prompt text
+            let crPromptText: String
+            if let crPromptFileArg {
+                let fileURL = URL(fileURLWithPath: resolvePath(crPromptFileArg))
+                crPromptText = try String(contentsOf: fileURL, encoding: .utf8)
+            } else if let crPromptArg {
+                crPromptText = crPromptArg
+            } else {
+                throw CLIError(message: "claude-run requires --prompt or --prompt-file")
+            }
+
+            let crWsId = try normalizeWorkspaceHandle(crWorkspaceArg, client: client)
+            let crSfId = try normalizeSurfaceHandle(crSurfaceArg, client: client, workspaceHandle: crWsId)
+
+            // Helper to send text to the target surface
+            func crSend(_ text: String) throws {
+                var p: [String: Any] = ["text": text]
+                if let crWsId { p["workspace_id"] = crWsId }
+                if let crSfId { p["surface_id"] = crSfId }
+                _ = try client.sendV2(method: "surface.send_text", params: p)
+            }
+
+            // Helper to read screen text from the target surface
+            func crRead() throws -> String {
+                var p: [String: Any] = [:]
+                if let crWsId { p["workspace_id"] = crWsId }
+                if let crSfId { p["surface_id"] = crSfId }
+                let payload = try client.sendV2(method: "surface.read_text", params: p)
+                return (payload["text"] as? String) ?? ""
+            }
+
+            // Step 1: cd if --cwd specified
+            if let crCwdArg {
+                let resolved = resolvePath(crCwdArg)
+                try crSend("cd \(resolved)\n")
+                Thread.sleep(forTimeInterval: 0.3)
+            }
+
+            // Step 2: Launch claude
+            try crSend("claude --dangerously-skip-permissions\n")
+
+            // Step 3: Poll for Claude prompt (❯ character), max timeout
+            let crMaxWait = Double(crTimeoutArg ?? "30") ?? 30.0
+            let crPollInterval: TimeInterval = 0.5
+            let crDeadline = Date().addingTimeInterval(crMaxWait)
+            var crReady = false
+            while Date() < crDeadline {
+                Thread.sleep(forTimeInterval: crPollInterval)
+                let screen = try crRead()
+                if screen.contains("❯") {
+                    crReady = true
+                    break
+                }
+            }
+            guard crReady else {
+                throw CLIError(message: "claude-run: timed out waiting for Claude prompt (❯) after \(Int(crMaxWait))s")
+            }
+
+            // Step 4: Send prompt text (without trailing newline)
+            let crEscaped = crPromptText.trimmingCharacters(in: .newlines)
+            try crSend(crEscaped)
+
+            // Step 5: Brief delay then submit with Enter
+            Thread.sleep(forTimeInterval: 0.5)
+            try crSend("\n")
+
+            print("OK")
+
         case "send":
             let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
             let (sfArg, rem1) = parseOption(rem0, name: "--surface")
@@ -6889,6 +6968,25 @@ struct CMUXCLI {
             Example:
               cmux claude-status --workspace workspace:2
               cmux claude-status --workspace workspace:2 --json
+            """
+        case "claude-run":
+            return """
+            Usage: cmux claude-run --surface <id> [flags] (--prompt <text> | --prompt-file <path>)
+
+            Launch Claude Code on a target surface and submit a prompt. Combines cd, claude launch,
+            prompt detection, and prompt submission into a single command.
+
+            Flags:
+              --surface <id|ref>     Target surface (required or $CMUX_SURFACE_ID)
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+              --cwd <path>           Change directory before launching claude
+              --prompt <text>        Prompt text to send
+              --prompt-file <path>   Path to file containing the prompt
+              --timeout <seconds>    Max seconds to wait for Claude prompt (default: 30)
+
+            Example:
+              cmux claude-run --surface surface:4 --cwd ~/project --prompt "fix the build errors"
+              cmux claude-run --surface surface:4 --prompt-file /tmp/task.md
             """
         case "send":
             return """
