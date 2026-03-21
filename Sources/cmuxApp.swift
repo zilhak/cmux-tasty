@@ -2589,7 +2589,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -5675,7 +5675,7 @@ private struct SettingsTitleLeadingInsetReader: NSViewRepresentable {
     }
 }
 
-private struct SettingsSectionHeader: View {
+struct SettingsSectionHeader: View {
     let title: String
 
     var body: some View {
@@ -5687,7 +5687,7 @@ private struct SettingsSectionHeader: View {
     }
 }
 
-private struct SettingsCard<Content: View>: View {
+struct SettingsCard<Content: View>: View {
     @ViewBuilder let content: Content
 
     init(@ViewBuilder content: () -> Content) {
@@ -5709,7 +5709,7 @@ private struct SettingsCard<Content: View>: View {
     }
 }
 
-private struct SettingsCardRow<Trailing: View>: View {
+struct SettingsCardRow<Trailing: View>: View {
     let title: String
     let subtitle: String?
     let controlWidth: CGFloat?
@@ -5757,7 +5757,7 @@ private struct SettingsCardRow<Trailing: View>: View {
     }
 }
 
-private struct SettingsPickerRow<SelectionValue: Hashable, PickerContent: View, ExtraTrailing: View>: View {
+struct SettingsPickerRow<SelectionValue: Hashable, PickerContent: View, ExtraTrailing: View>: View {
     let title: String
     let subtitle: String?
     let controlWidth: CGFloat
@@ -5825,7 +5825,7 @@ private extension View {
     }
 }
 
-private struct SettingsCardDivider: View {
+struct SettingsCardDivider: View {
     var body: some View {
         Rectangle()
             .fill(Color(nsColor: NSColor.separatorColor).opacity(0.5))
@@ -5833,7 +5833,7 @@ private struct SettingsCardDivider: View {
     }
 }
 
-private struct SettingsCardNote: View {
+struct SettingsCardNote: View {
     let text: String
 
     init(_ text: String) {
@@ -5953,7 +5953,7 @@ private struct ThemeWindowThumbnail: View {
     }
 }
 
-private struct ThemePickerRow: View {
+struct ThemePickerRow: View {
     let selectedMode: String
     let onSelect: (AppearanceMode) -> Void
 
@@ -6037,7 +6037,7 @@ private struct ThemePickerRow: View {
     }
 }
 
-private struct AppIconPickerRow: View {
+struct AppIconPickerRow: View {
     let selectedMode: String
     let onSelect: (AppIconMode) -> Void
 
@@ -6119,7 +6119,7 @@ private struct AppIconPickerRow: View {
     }
 }
 
-private struct ShortcutSettingRow: View {
+struct ShortcutSettingRow: View {
     let action: KeyboardShortcutSettings.Action
     @State private var shortcut: StoredShortcut
     @State private var secondaryShortcut: StoredShortcut?
@@ -6204,11 +6204,30 @@ private struct ShortcutSettingRow: View {
 }
 
 private struct SettingsRootView: View {
+    enum SettingsTab: String {
+        case tasty
+        case origin
+    }
+
+    @State private var selectedTab: SettingsTab = .tasty
+
     var body: some View {
-        SettingsView()
-            .background(WindowAccessor { window in
-                configureSettingsWindow(window)
-            })
+        TabView(selection: $selectedTab) {
+            TastySettingsView()
+                .tabItem {
+                    Label("Tasty", systemImage: "star")
+                }
+                .tag(SettingsTab.tasty)
+
+            SettingsView()
+                .tabItem {
+                    Label("Origin", systemImage: "arrow.triangle.branch")
+                }
+                .tag(SettingsTab.origin)
+        }
+        .background(WindowAccessor { window in
+            configureSettingsWindow(window)
+        })
     }
 
     private func configureSettingsWindow(_ window: NSWindow) {

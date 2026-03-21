@@ -1,7 +1,11 @@
 # cmux-tasty (fork) agent notes
 
 > 이 저장소는 cmux 원본의 fork입니다. 원본의 CLAUDE.md 지침은 무시하세요.
-> `.gitattributes`에 `CLAUDE.md merge=ours`가 설정되어 upstream merge 시 이 파일이 유지됩니다.
+> `.gitattributes`에 `CLAUDE.md merge=ours`와 `.claude/** merge=ours`가 설정되어 upstream merge 시 이 파일들이 유지됩니다.
+
+## .claude 디렉토리 정책
+
+`.claude/` 디렉토리는 **로컬 전용**으로 사용합니다. upstream의 `.claude/commands/` 등은 사용하지 않으며, `.gitattributes`의 `merge=ours` 설정으로 upstream merge 시 덮어쓰지 않습니다. 임시 파일, 빌드 산출물, 스크린샷 등 git에 올라가지 않는 파일들을 이 디렉토리에 저장합니다.
 
 ## 빌드 및 실행
 
@@ -32,6 +36,13 @@ xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Debug -des
 - `Sources/Panels/` — Panel 프로토콜 및 구현체 (TerminalPanel, BrowserPanel, MarkdownPanel, SurfaceGroup)
 - `vendor/bonsplit/` — Bonsplit 라이브러리 (split pane 관리)
 - `ghostty/` — Ghostty 터미널 엔진 서브모듈
+
+## Worktree 심볼릭 링크 대상
+
+Conductor가 worktree를 생성할 때, 아래 디렉토리는 수정 대상이 아니므로 심볼릭 링크로 연결한다:
+
+- `ghostty/` — 터미널 엔진 서브모듈 (~3.9GB)
+- `GhosttyKit.xcframework/` — 프레임워크 바이너리 (~540MB)
 
 ## 버전 및 릴리즈
 

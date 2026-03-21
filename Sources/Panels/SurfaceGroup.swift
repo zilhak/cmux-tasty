@@ -3,8 +3,9 @@ import Combine
 import AppKit
 import Bonsplit
 
-/// A surface group that wraps multiple child terminal surfaces in a split layout.
+/// A surface group that wraps multiple child panels in a split layout.
 /// The Workspace sees this as a single panel entry; no nested BonsplitController is needed.
+/// Supports any Panel type (Terminal, Browser, Markdown) as children.
 @MainActor
 final class SurfaceGroup: Panel, ObservableObject {
     let id: UUID
@@ -16,7 +17,7 @@ final class SurfaceGroup: Panel, ObservableObject {
     typealias Orientation = Bonsplit.SplitOrientation
 
     indirect enum SplitNode {
-        case leaf(panel: TerminalPanel)
+        case leaf(panel: any Panel)
         case split(first: SplitNode, second: SplitNode, orientation: Orientation, ratio: CGFloat)
     }
 
@@ -30,9 +31,10 @@ final class SurfaceGroup: Panel, ObservableObject {
     init(
         id: UUID,
         workspaceId: UUID,
-        first: TerminalPanel,
-        second: TerminalPanel,
-        orientation: Orientation
+        first: any Panel,
+        second: any Panel,
+        orientation: Orientation,
+        ratio: CGFloat = 0.5
     ) {
         self.id = id
         self.workspaceId = workspaceId
@@ -40,20 +42,30 @@ final class SurfaceGroup: Panel, ObservableObject {
             first: .leaf(panel: first),
             second: .leaf(panel: second),
             orientation: orientation,
-            ratio: 0.5
+            ratio: ratio
         )
         self.focusedChildId = first.id
     }
 
     // MARK: - Child Access
 
-    var allChildPanels: [TerminalPanel] {
+    var allChildPanels: [any Panel] {
         collectLeaves(rootNode)
     }
 
-    var focusedChild: TerminalPanel? {
+    /// All terminal panels in the group (for backward compatibility).
+    var allTerminalPanels: [TerminalPanel] {
+        allChildPanels.compactMap { $0 as? TerminalPanel }
+    }
+
+    var focusedChild: (any Panel)? {
         guard let focusedChildId else { return allChildPanels.first }
         return findLeaf(focusedChildId, in: rootNode)
+    }
+
+    /// Focused terminal child (for backward compatibility).
+    var focusedTerminalChild: TerminalPanel? {
+        focusedChild as? TerminalPanel
     }
 
     var childCount: Int {
@@ -67,7 +79,7 @@ final class SurfaceGroup: Panel, ObservableObject {
     }
 
     var displayIcon: String? {
-        "terminal.fill"
+        focusedChild?.displayIcon ?? "terminal.fill"
     }
 
     var isDirty: Bool { false }
@@ -130,13 +142,13 @@ final class SurfaceGroup: Panel, ObservableObject {
         focusedChildId = childId
     }
 
-    /// Split the given child, adding a new terminal next to it.
-    func splitChild(_ childId: UUID, orientation: Orientation, newPanel: TerminalPanel) {
-        rootNode = insertSplit(childId: childId, orientation: orientation, newPanel: newPanel, in: rootNode)
+    /// Split the given child, adding a new panel next to it.
+    func splitChild(_ childId: UUID, orientation: Orientation, newPanel: any Panel, ratio: CGFloat = 0.5) {
+        rootNode = insertSplit(childId: childId, orientation: orientation, newPanel: newPanel, ratio: ratio, in: rootNode)
     }
 
-    /// Remove a child from the tree. Returns true if the group should dissolve (1 child left).
-    func removeChild(_ childId: UUID) -> TerminalPanel? {
+    /// Remove a child from the tree. Returns the remaining panel if the group should dissolve (1 child left).
+    func removeChild(_ childId: UUID) -> (any Panel)? {
         guard let newRoot = removeLeaf(childId, from: rootNode) else { return nil }
         rootNode = newRoot
 
@@ -154,7 +166,7 @@ final class SurfaceGroup: Panel, ObservableObject {
 
     // MARK: - Tree Helpers
 
-    private func collectLeaves(_ node: SplitNode) -> [TerminalPanel] {
+    private func collectLeaves(_ node: SplitNode) -> [any Panel] {
         switch node {
         case .leaf(let panel):
             return [panel]
@@ -163,7 +175,7 @@ final class SurfaceGroup: Panel, ObservableObject {
         }
     }
 
-    private func findLeaf(_ id: UUID, in node: SplitNode) -> TerminalPanel? {
+    private func findLeaf(_ id: UUID, in node: SplitNode) -> (any Panel)? {
         switch node {
         case .leaf(let panel):
             return panel.id == id ? panel : nil
@@ -181,7 +193,7 @@ final class SurfaceGroup: Panel, ObservableObject {
         }
     }
 
-    private func insertSplit(childId: UUID, orientation: Orientation, newPanel: TerminalPanel, in node: SplitNode) -> SplitNode {
+    private func insertSplit(childId: UUID, orientation: Orientation, newPanel: any Panel, ratio: CGFloat, in node: SplitNode) -> SplitNode {
         switch node {
         case .leaf(let panel):
             if panel.id == childId {
@@ -189,16 +201,16 @@ final class SurfaceGroup: Panel, ObservableObject {
                     first: .leaf(panel: panel),
                     second: .leaf(panel: newPanel),
                     orientation: orientation,
-                    ratio: 0.5
+                    ratio: ratio
                 )
             }
             return node
-        case .split(let first, let second, let ori, let ratio):
+        case .split(let first, let second, let ori, let r):
             return .split(
-                first: insertSplit(childId: childId, orientation: orientation, newPanel: newPanel, in: first),
-                second: insertSplit(childId: childId, orientation: orientation, newPanel: newPanel, in: second),
+                first: insertSplit(childId: childId, orientation: orientation, newPanel: newPanel, ratio: ratio, in: first),
+                second: insertSplit(childId: childId, orientation: orientation, newPanel: newPanel, ratio: ratio, in: second),
                 orientation: ori,
-                ratio: ratio
+                ratio: r
             )
         }
     }
@@ -206,7 +218,6 @@ final class SurfaceGroup: Panel, ObservableObject {
     private func removeLeaf(_ id: UUID, from node: SplitNode) -> SplitNode? {
         switch node {
         case .leaf(let panel):
-            // If this is the leaf to remove, return nil (parent will collapse)
             return panel.id == id ? nil : node
         case .split(let first, let second, let ori, let ratio):
             let newFirst = removeLeaf(id, from: first)

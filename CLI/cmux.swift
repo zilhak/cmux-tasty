@@ -2027,6 +2027,54 @@ struct CMUXCLI {
             if jsonOutput { print(jsonString(payload)) }
             else { print((payload["text"] as? String) ?? "") }
 
+        case "claude-status":
+            let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
+            let (linesArg, rem1) = parseOption(rem0, name: "--lines")
+            if !rem1.isEmpty {
+                throw CLIError(message: "claude-status: unexpected arguments: \(rem1.joined(separator: " "))")
+            }
+            let workspaceArg = wsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            var params: [String: Any] = [:]
+            let wsId = try normalizeWorkspaceHandle(workspaceArg, client: client)
+            if let wsId { params["workspace_id"] = wsId }
+            if let linesArg {
+                guard let lineCount = Int(linesArg), lineCount > 0 else {
+                    throw CLIError(message: "--lines must be greater than 0")
+                }
+                params["lines"] = lineCount
+            }
+            let payload = try client.sendV2(method: "workspace.claude_activity", params: params)
+            if jsonOutput {
+                print(jsonString(payload))
+            } else {
+                guard let surfaces = payload["surfaces"] as? [[String: Any]] else {
+                    print("No surfaces found")
+                    break
+                }
+                if surfaces.isEmpty {
+                    print("No terminal surfaces in workspace")
+                    break
+                }
+                for surface in surfaces {
+                    let ref = surface["surface_ref"] as? String ?? "?"
+                    let title = surface["title"] as? String ?? ""
+                    let seconds = surface["seconds_since_change"] as? Int ?? 0
+                    let lastLines = surface["last_lines"] as? [String] ?? []
+
+                    let timeStr: String
+                    if seconds == 0 {
+                        timeStr = "just now"
+                    } else if seconds < 60 {
+                        timeStr = "\(seconds)s ago"
+                    } else {
+                        timeStr = "\(seconds / 60)m \(seconds % 60)s ago"
+                    }
+
+                    let preview = lastLines.last ?? "(empty)"
+                    print("\(ref)  \(timeStr)  \"\(title)\"  → \(preview)")
+                }
+            }
+
         case "send":
             let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
             let (sfArg, rem1) = parseOption(rem0, name: "--surface")
@@ -6828,6 +6876,20 @@ struct CMUXCLI {
               cmux read-since-mark --surface surface:2
               cmux read-since-mark --surface surface:2 --clear
             """
+        case "claude-status":
+            return """
+            Usage: cmux claude-status [flags]
+
+            Check activity status of all terminal surfaces in a workspace. Reports time since last meaningful output change for each surface, filtering out Claude's continuously updating timer/spinner line.
+
+            Flags:
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+              --lines <n>            Number of recent lines to include (default: 5)
+
+            Example:
+              cmux claude-status --workspace workspace:2
+              cmux claude-status --workspace workspace:2 --json
+            """
         case "send":
             return """
             Usage: cmux send [flags] [--] <text>
@@ -11309,6 +11371,7 @@ struct CMUXCLI {
           read-screen [--workspace <id|ref>] [--surface <id|ref>] [--scrollback] [--lines <n>]
           set-mark [--workspace <id|ref>] [--surface <id|ref>]
           read-since-mark [--workspace <id|ref>] [--surface <id|ref>] [--clear]
+          claude-status [--workspace <id|ref>] [--lines <n>]
           send [--workspace <id|ref>] [--surface <id|ref>] <text>
           send-key [--workspace <id|ref>] [--surface <id|ref>] <key>
           send-panel --panel <id|ref> [--workspace <id|ref>] <text>

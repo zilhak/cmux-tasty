@@ -5024,7 +5024,7 @@ final class Workspace: Identifiable, ObservableObject {
             return terminalPanel
         }
         if let surfaceGroup = panel as? SurfaceGroup {
-            return surfaceGroup.focusedChild
+            return surfaceGroup.focusedTerminalChild
         }
         return nil
     }
@@ -5419,6 +5419,46 @@ final class Workspace: Identifiable, ObservableObject {
         panels[group.id] = group
         panels[newTerminal.id] = newTerminal
         // Update the Bonsplit tab mapping to point to the group.
+        surfaceIdToPanelId[tabId] = group.id
+        return true
+    }
+
+    /// Split a tab into a SurfaceGroup with an arbitrary panel as the new child.
+    /// This allows adding non-terminal panels (e.g., MarkdownPanel) into a surface group split.
+    @discardableResult
+    func splitTabWithPanel(
+        tabId: TabID,
+        newPanel: any Panel,
+        orientation: SplitOrientation = .horizontal,
+        ratio: CGFloat = 0.5
+    ) -> Bool {
+        guard let existingPanelId = panelIdFromSurfaceId(tabId) else { return false }
+
+        // If this tab already has a surface group, split within it
+        if let existingGroup = panels[existingPanelId] as? SurfaceGroup {
+            guard let focusedChildId = existingGroup.focusedChildId else { return false }
+            existingGroup.splitChild(focusedChildId, orientation: orientation, newPanel: newPanel, ratio: ratio)
+            panels[newPanel.id] = newPanel
+            panelTitles[newPanel.id] = newPanel.displayTitle
+            return true
+        }
+
+        // Convert any single panel into a SurfaceGroup
+        guard let existingPanel = panels[existingPanelId] else { return false }
+
+        panels[newPanel.id] = newPanel
+        panelTitles[newPanel.id] = newPanel.displayTitle
+
+        let group = SurfaceGroup(
+            id: UUID(),
+            workspaceId: id,
+            first: existingPanel,
+            second: newPanel,
+            orientation: orientation,
+            ratio: ratio
+        )
+
+        panels[group.id] = group
         surfaceIdToPanelId[tabId] = group.id
         return true
     }
@@ -8321,7 +8361,7 @@ final class Workspace: Identifiable, ObservableObject {
         if let terminalPanel = targetPanel as? TerminalPanel {
             terminalPanel.hostedView.ensureFocus(for: id, surfaceId: targetPanelId)
         } else if let surfaceGroup = targetPanel as? SurfaceGroup,
-                  let focusedChild = surfaceGroup.focusedChild {
+                  let focusedChild = surfaceGroup.focusedTerminalChild {
             focusedChild.hostedView.ensureFocus(for: id, surfaceId: focusedChild.id)
         }
         if let dir = panelDirectories[targetPanelId] {
@@ -9326,7 +9366,7 @@ extension Workspace: BonsplitDelegate {
         // Without this, keyboard input can remain on a different terminal than the blue tab indicator.
         let effectiveTerminalPanel: TerminalPanel? = {
             if let tp = panel as? TerminalPanel { return tp }
-            if let sg = panel as? SurfaceGroup { return sg.focusedChild }
+            if let sg = panel as? SurfaceGroup { return sg.focusedTerminalChild }
             return nil
         }()
         if reassertAppKitFocus, let terminalPanel = effectiveTerminalPanel {

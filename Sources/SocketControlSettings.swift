@@ -350,7 +350,11 @@ struct SocketControlSettings {
     }
 
     static var defaultMode: SocketControlMode {
+#if DEBUG
+        return .allowAll
+#else
         return .cmuxOnly
+#endif
     }
 
     private static var isDebugBuild: Bool {

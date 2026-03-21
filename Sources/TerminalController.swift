@@ -191,6 +191,13 @@ class TerminalController {
     private var v2BrowserNextElementOrdinal: Int = 1
     private var v2BrowserElementRefs: [String: V2BrowserElementRefEntry] = [:]
     private var surfaceReadMarks: [UUID: String] = [:]
+
+    // MARK: - Claude Activity Tracking
+    private struct SurfaceActivitySnapshot {
+        let contentLineCount: Int
+        let timestamp: Date
+    }
+    private var surfaceActivitySnapshots: [UUID: SurfaceActivitySnapshot] = [:]
     private var v2BrowserFrameSelectorBySurface: [UUID: String] = [:]
     private var v2BrowserInitScriptsBySurface: [UUID: [String]] = [:]
     private var v2BrowserInitStylesBySurface: [UUID: [String]] = [:]
@@ -2355,6 +2362,9 @@ class TerminalController {
         case "surface.read_since_mark":
             return v2Result(id: id, self.v2SurfaceReadSinceMark(params: params))
 
+        case "workspace.claude_activity":
+            return v2Result(id: id, self.v2WorkspaceClaudeActivity(params: params))
+
 
 #if DEBUG
         // Debug / test-only
@@ -2479,6 +2489,7 @@ class TerminalController {
             "surface.read_text",
             "surface.set_read_mark",
             "surface.read_since_mark",
+            "workspace.claude_activity",
             "surface.clear_history",
             "surface.trigger_flash",
             "pane.list",
@@ -2939,6 +2950,7 @@ class TerminalController {
         case .leaf(let panel):
             return [
                 "type": "surface",
+                "panel_type": panel.panelType.rawValue,
                 "id": panel.id.uuidString,
                 "ref": v2Ref(kind: .surface, uuid: panel.id),
                 "title": panel.displayTitle,
@@ -5593,6 +5605,95 @@ class TerminalController {
                 "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
                 "surface_id": surfaceId.uuidString,
                 "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+                "window_id": v2OrNull(windowId?.uuidString),
+                "window_ref": v2Ref(kind: .window, uuid: windowId)
+            ])
+        }
+        return result
+    }
+
+    // MARK: - Workspace Claude Activity
+
+    private func v2WorkspaceClaudeActivity(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+
+        let linesCount = v2Int(params, "lines") ?? 5
+
+        var result: V2CallResult = .err(code: "internal_error", message: "Failed to check claude activity", data: nil)
+        v2MainSync {
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                result = .err(code: "not_found", message: "Workspace not found", data: nil)
+                return
+            }
+
+            let now = Date()
+            var surfaceResults: [[String: Any]] = []
+
+            // Iterate all terminal surfaces in the workspace
+            let orderedTabIds = ws.bonsplitController.allTabIds
+            for tabId in orderedTabIds {
+                guard let panelId = ws.panelIdFromSurfaceId(tabId),
+                      let terminalPanel = ws.terminalPanel(for: panelId) else { continue }
+
+                // Read full terminal text (scrollback + viewport)
+                let response = readTerminalTextBase64(terminalPanel: terminalPanel, includeScrollback: true)
+                guard response.hasPrefix("OK ") else { continue }
+                let base64 = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let text = Data(base64Encoded: base64).flatMap({ String(data: $0, encoding: .utf8) }) else { continue }
+
+                // Split into lines and drop the last line (Claude's timer/spinner)
+                var lines = text.components(separatedBy: "\n")
+                // Remove trailing empty lines first
+                while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+                    lines.removeLast()
+                }
+                // Drop the last non-empty line (the timer/status line)
+                if !lines.isEmpty {
+                    lines.removeLast()
+                }
+
+                let contentLineCount = lines.count
+
+                // Compare with stored snapshot
+                let prevSnapshot = surfaceActivitySnapshots[panelId]
+                let secondsSinceChange: Double
+                if let prev = prevSnapshot, prev.contentLineCount == contentLineCount {
+                    // No change — report elapsed time since last change
+                    secondsSinceChange = now.timeIntervalSince(prev.timestamp)
+                } else {
+                    // Changed — update snapshot
+                    surfaceActivitySnapshots[panelId] = SurfaceActivitySnapshot(
+                        contentLineCount: contentLineCount,
+                        timestamp: now
+                    )
+                    secondsSinceChange = 0
+                }
+
+                // Get last N meaningful lines for context
+                let lastLines = Array(lines.suffix(linesCount))
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+
+                let title = ws.panelTitle(panelId: panelId) ?? terminalPanel.displayTitle
+
+                surfaceResults.append([
+                    "surface_id": panelId.uuidString,
+                    "surface_ref": v2Ref(kind: .surface, uuid: panelId),
+                    "title": title,
+                    "seconds_since_change": Int(secondsSinceChange),
+                    "content_line_count": contentLineCount,
+                    "last_lines": lastLines
+                ])
+            }
+
+            let windowId = v2ResolveWindowId(tabManager: tabManager)
+            result = .ok([
+                "workspace_id": ws.id.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+                "surfaces": surfaceResults,
+                "surface_count": surfaceResults.count,
                 "window_id": v2OrNull(windowId?.uuidString),
                 "window_ref": v2Ref(kind: .window, uuid: windowId)
             ])

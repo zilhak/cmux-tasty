@@ -3,7 +3,7 @@ import Foundation
 import Bonsplit
 
 /// View that renders a SurfaceGroup's split tree layout.
-/// Each leaf node renders a TerminalPanelView; split nodes render a resizable split container.
+/// Each leaf node renders the appropriate panel view; split nodes render a resizable split container.
 struct SurfaceGroupView: View {
     @ObservedObject var group: SurfaceGroup
     let paneId: PaneID
@@ -44,16 +44,18 @@ private struct SurfaceGroupSplitNodeView: View {
     var body: some View {
         switch node {
         case .leaf(let panel):
-            TerminalPanelView(
+            PanelContentView(
                 panel: panel,
                 paneId: paneId,
                 isFocused: isFocused && focusedChildId == panel.id,
+                isSelectedInPane: true,
                 isVisibleInUI: isVisibleInUI,
                 portalPriority: portalPriority,
                 isSplit: true,
                 appearance: appearance,
                 hasUnreadNotification: false,
                 onFocus: { onChildFocus(panel.id) },
+                onRequestPanelFocus: { onChildFocus(panel.id) },
                 onTriggerFlash: { onTriggerFlash(panel.id) }
             )
 
