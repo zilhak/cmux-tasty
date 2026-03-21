@@ -9330,6 +9330,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return true
         }
 
+        // Pane cycling: Cmd+Option+] / Cmd+Option+[
+        if matchActionShortcut(event: event, action: .nextPane) {
+            tabManager?.selectNextPane()
+            return true
+        }
+        if matchActionShortcut(event: event, action: .prevPane) {
+            tabManager?.selectPreviousPane()
+            return true
+        }
+
         // Surface navigation: Cmd+Shift+] / Cmd+Shift+[
         if matchActionShortcut(event: event, action: .nextSurface) {
             tabManager?.selectNextSurface()

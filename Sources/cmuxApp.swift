@@ -151,6 +151,8 @@ struct cmuxApp: App {
     @AppStorage(KeyboardShortcutSettings.Action.newWindow.defaultsKey) private var newWindowShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.showNotifications.defaultsKey) private var showNotificationsShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.jumpToUnread.defaultsKey) private var jumpToUnreadShortcutData = Data()
+    @AppStorage(KeyboardShortcutSettings.Action.nextPane.defaultsKey) private var nextPaneShortcutData = Data()
+    @AppStorage(KeyboardShortcutSettings.Action.prevPane.defaultsKey) private var prevPaneShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.nextSurface.defaultsKey) private var nextSurfaceShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.prevSurface.defaultsKey) private var prevSurfaceShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.nextSidebarTab.defaultsKey) private var nextWorkspaceShortcutData = Data()
@@ -704,6 +706,16 @@ struct cmuxApp: App {
 
                 Divider()
 
+                splitCommandButton(title: String(localized: "menu.view.nextPane", defaultValue: "Next Pane"), shortcut: nextPaneMenuShortcut) {
+                    activeTabManager.selectNextPane()
+                }
+
+                splitCommandButton(title: String(localized: "menu.view.previousPane", defaultValue: "Previous Pane"), shortcut: prevPaneMenuShortcut) {
+                    activeTabManager.selectPreviousPane()
+                }
+
+                Divider()
+
                 splitCommandButton(title: String(localized: "menu.view.nextSurface", defaultValue: "Next Surface"), shortcut: nextSurfaceMenuShortcut) {
                     activeTabManager.selectNextSurface()
                 }
@@ -897,6 +909,14 @@ struct cmuxApp: App {
             from: jumpToUnreadShortcutData,
             fallback: KeyboardShortcutSettings.Action.jumpToUnread.defaultShortcut
         )
+    }
+
+    private var nextPaneMenuShortcut: StoredShortcut {
+        decodeShortcut(from: nextPaneShortcutData, fallback: KeyboardShortcutSettings.Action.nextPane.defaultShortcut)
+    }
+
+    private var prevPaneMenuShortcut: StoredShortcut {
+        decodeShortcut(from: prevPaneShortcutData, fallback: KeyboardShortcutSettings.Action.prevPane.defaultShortcut)
     }
 
     private var nextSurfaceMenuShortcut: StoredShortcut {

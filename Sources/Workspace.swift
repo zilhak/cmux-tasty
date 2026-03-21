@@ -8125,6 +8125,46 @@ final class Workspace: Identifiable, ObservableObject {
         }
     }
 
+    // MARK: - Pane Cycling
+
+    /// Cycle focus to the next pane in this workspace
+    func selectNextPane() {
+        let paneIds = bonsplitController.allPaneIds
+        guard paneIds.count > 1,
+              let currentPaneId = bonsplitController.focusedPaneId,
+              let currentIndex = paneIds.firstIndex(of: currentPaneId) else { return }
+
+        if let prevPanelId = focusedPanelId, let prev = panels[prevPanelId] {
+            prev.unfocus()
+        }
+
+        let nextIndex = (currentIndex + 1) % paneIds.count
+        bonsplitController.focusPane(paneIds[nextIndex])
+
+        if let tabId = bonsplitController.selectedTab(inPane: paneIds[nextIndex])?.id {
+            applyTabSelection(tabId: tabId, inPane: paneIds[nextIndex])
+        }
+    }
+
+    /// Cycle focus to the previous pane in this workspace
+    func selectPreviousPane() {
+        let paneIds = bonsplitController.allPaneIds
+        guard paneIds.count > 1,
+              let currentPaneId = bonsplitController.focusedPaneId,
+              let currentIndex = paneIds.firstIndex(of: currentPaneId) else { return }
+
+        if let prevPanelId = focusedPanelId, let prev = panels[prevPanelId] {
+            prev.unfocus()
+        }
+
+        let prevIndex = (currentIndex - 1 + paneIds.count) % paneIds.count
+        bonsplitController.focusPane(paneIds[prevIndex])
+
+        if let tabId = bonsplitController.selectedTab(inPane: paneIds[prevIndex])?.id {
+            applyTabSelection(tabId: tabId, inPane: paneIds[prevIndex])
+        }
+    }
+
     // MARK: - Surface Navigation
 
     /// Select the next surface in the currently focused pane

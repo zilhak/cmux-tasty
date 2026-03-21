@@ -30,6 +30,8 @@ enum KeyboardShortcutSettings {
         case toggleTerminalCopyMode
 
         // Panes / splits
+        case nextPane
+        case prevPane
         case focusLeft
         case focusRight
         case focusUp
@@ -70,6 +72,8 @@ enum KeyboardShortcutSettings {
             case .closeWorkspace: return String(localized: "shortcut.closeWorkspace.label", defaultValue: "Close Workspace")
             case .newSurface: return String(localized: "shortcut.newSurface.label", defaultValue: "New Surface")
             case .toggleTerminalCopyMode: return String(localized: "shortcut.toggleTerminalCopyMode.label", defaultValue: "Toggle Terminal Copy Mode")
+            case .nextPane: return String(localized: "shortcut.nextPane.label", defaultValue: "Next Pane")
+            case .prevPane: return String(localized: "shortcut.previousPane.label", defaultValue: "Previous Pane")
             case .focusLeft: return String(localized: "shortcut.focusPaneLeft.label", defaultValue: "Focus Pane Left")
             case .focusRight: return String(localized: "shortcut.focusPaneRight.label", defaultValue: "Focus Pane Right")
             case .focusUp: return String(localized: "shortcut.focusPaneUp.label", defaultValue: "Focus Pane Up")
@@ -124,6 +128,10 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "r", command: true, shift: true, option: false, control: false)
             case .closeWorkspace:
                 return StoredShortcut(key: "w", command: true, shift: true, option: false, control: false)
+            case .nextPane:
+                return StoredShortcut(key: "]", command: true, shift: false, option: true, control: false)
+            case .prevPane:
+                return StoredShortcut(key: "[", command: true, shift: false, option: true, control: false)
             case .focusLeft:
                 return StoredShortcut(key: "←", command: true, shift: false, option: true, control: false)
             case .focusRight:

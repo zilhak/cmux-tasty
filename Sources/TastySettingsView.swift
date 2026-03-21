@@ -1177,7 +1177,7 @@ struct TastyShortcutsSettingsSection: View {
             case .navigation:
                 return [.nextSurface, .prevSurface, .newSurface, .toggleTerminalCopyMode]
             case .panes:
-                return [.focusLeft, .focusRight, .focusUp, .focusDown, .splitRight, .splitDown, .toggleSplitZoom, .splitBrowserRight, .splitBrowserDown]
+                return [.nextPane, .prevPane, .focusLeft, .focusRight, .focusUp, .focusDown, .splitRight, .splitDown, .toggleSplitZoom, .splitBrowserRight, .splitBrowserDown]
             case .surfaceGroup:
                 return [.createSurfaceGroup]
             case .panels:
