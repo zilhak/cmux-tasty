@@ -103,8 +103,15 @@ UI 컴포넌트는 `SettingsCard`, `SettingsCardRow`, `SettingsCardDivider`, `Se
 
 ### Shortcuts
 
+**전역 설정:**
 - Show Cmd/Ctrl-Hold Shortcut Hints — Cmd/Ctrl 홀드 시 단축키 힌트 표시
-- 키보드 단축키 목록 — `KeyboardShortcutSettings.Action.allCases` 기반으로 각 액션의 단축키를 표시/녹화
+- Swap Cmd/Ctrl Number Shortcuts — Cmd+1~9(워크스페이스)와 Ctrl+1~9(Pane) modifier 교환 토글
+
+**서브탭:** Segmented Picker로 카테고리별 단축키 표시.
+- General / Workspace / Navigation / Panes / Surface Group / Panels
+- 각 탭에서 해당 카테고리의 키보드 단축키를 표시/녹화
+
+상세: [keyboard-shortcut-enhancements.md](keyboard-shortcut-enhancements.md)
 
 ## 헬퍼
 
