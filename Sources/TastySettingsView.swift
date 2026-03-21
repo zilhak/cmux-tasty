@@ -1147,10 +1147,42 @@ struct TastyAutomationSettingsSection: View {
 // MARK: - Shortcuts
 
 struct TastyShortcutsSettingsSection: View {
+    enum ShortcutTab: String, CaseIterable, Identifiable {
+        case general
+        case navigation
+        case panes
+        case panels
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .general: return String(localized: "settings.shortcuts.tab.general", defaultValue: "General")
+            case .navigation: return String(localized: "settings.shortcuts.tab.navigation", defaultValue: "Navigation")
+            case .panes: return String(localized: "settings.shortcuts.tab.panes", defaultValue: "Panes")
+            case .panels: return String(localized: "settings.shortcuts.tab.panels", defaultValue: "Panels")
+            }
+        }
+
+        var actions: [KeyboardShortcutSettings.Action] {
+            switch self {
+            case .general:
+                return [.toggleSidebar, .newTab, .newWindow, .closeWindow, .openFolder, .sendFeedback, .showNotifications, .jumpToUnread, .triggerFlash]
+            case .navigation:
+                return [.nextSurface, .prevSurface, .nextSidebarTab, .prevSidebarTab, .renameTab, .renameWorkspace, .closeWorkspace, .newSurface, .toggleTerminalCopyMode]
+            case .panes:
+                return [.focusLeft, .focusRight, .focusUp, .focusDown, .splitRight, .splitDown, .toggleSplitZoom, .splitBrowserRight, .splitBrowserDown, .createSurfaceGroup]
+            case .panels:
+                return [.openBrowser, .toggleBrowserDeveloperTools, .showBrowserJavaScriptConsole]
+            }
+        }
+    }
+
     @AppStorage(ShortcutHintDebugSettings.showHintsOnCommandHoldKey)
     private var showShortcutHintsOnCommandHold = ShortcutHintDebugSettings.defaultShowHintsOnCommandHold
 
     @State private var shortcutResetToken = UUID()
+    @State private var selectedTab: ShortcutTab = .general
 
     var body: some View {
         SettingsSectionHeader(title: "Keyboard Shortcuts")
@@ -1165,10 +1197,18 @@ struct TastyShortcutsSettingsSection: View {
                     .labelsHidden()
                     .controlSize(.small)
             }
+        }
 
-            SettingsCardDivider()
+        Picker("", selection: $selectedTab) {
+            ForEach(ShortcutTab.allCases) { tab in
+                Text(tab.label).tag(tab)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.top, 4)
 
-            let actions = KeyboardShortcutSettings.Action.allCases
+        SettingsCard {
+            let actions = selectedTab.actions
             ForEach(Array(actions.enumerated()), id: \.element.id) { index, action in
                 ShortcutSettingRow(action: action)
                     .padding(.horizontal, 14)
