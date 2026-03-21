@@ -2362,6 +2362,14 @@ class TerminalController {
         case "surface.read_since_mark":
             return v2Result(id: id, self.v2SurfaceReadSinceMark(params: params))
 
+        // Surface hooks
+        case "surface.set_hook":
+            return v2Result(id: id, self.v2SurfaceSetHook(params: params))
+        case "surface.list_hooks":
+            return v2Result(id: id, self.v2SurfaceListHooks(params: params))
+        case "surface.unset_hook":
+            return v2Result(id: id, self.v2SurfaceUnsetHook(params: params))
+
         case "workspace.claude_activity":
             return v2Result(id: id, self.v2WorkspaceClaudeActivity(params: params))
 
@@ -2492,6 +2500,9 @@ class TerminalController {
             "workspace.claude_activity",
             "surface.clear_history",
             "surface.trigger_flash",
+            "surface.set_hook",
+            "surface.list_hooks",
+            "surface.unset_hook",
             "pane.list",
             "pane.focus",
             "pane.surfaces",
@@ -15562,6 +15573,77 @@ class TerminalController {
 
             if let id = newPanelId {
                 result = "OK \(id.uuidString)"
+            }
+        }
+        return result
+    }
+
+    // MARK: - Surface Hooks
+
+    private func v2SurfaceSetHook(params: [String: Any]) -> V2CallResult {
+        guard let eventStr = params["event"] as? String else {
+            return .err(code: "invalid_params", message: "Missing event", data: nil)
+        }
+        guard let event = SurfaceHookManager.Event(rawValue: eventStr) else {
+            let valid = SurfaceHookManager.Event.allCases.map(\.rawValue).joined(separator: ", ")
+            return .err(code: "invalid_params", message: "Unknown event '\(eventStr)'. Valid events: \(valid)", data: nil)
+        }
+        guard let command = params["command"] as? String, !command.isEmpty else {
+            return .err(code: "invalid_params", message: "Missing or empty command", data: nil)
+        }
+
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+
+        var result: V2CallResult = .err(code: "internal_error", message: "Unexpected error", data: nil)
+        v2MainSync {
+            let hook = SurfaceHookManager.shared.setHook(surfaceId: surfaceId, event: event, command: command)
+            result = .ok(hook.toDictionary())
+        }
+        return result
+    }
+
+    private func v2SurfaceListHooks(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+
+        let eventFilter: SurfaceHookManager.Event?
+        if let eventStr = params["event"] as? String {
+            guard let event = SurfaceHookManager.Event(rawValue: eventStr) else {
+                let valid = SurfaceHookManager.Event.allCases.map(\.rawValue).joined(separator: ", ")
+                return .err(code: "invalid_params", message: "Unknown event '\(eventStr)'. Valid events: \(valid)", data: nil)
+            }
+            eventFilter = event
+        } else {
+            eventFilter = nil
+        }
+
+        var result: V2CallResult = .err(code: "internal_error", message: "Unexpected error", data: nil)
+        v2MainSync {
+            let hooks = SurfaceHookManager.shared.listHooks(surfaceId: surfaceId, event: eventFilter)
+            result = .ok([
+                "surface_id": surfaceId.uuidString,
+                "hooks": hooks.map { $0.toDictionary() },
+            ])
+        }
+        return result
+    }
+
+    private func v2SurfaceUnsetHook(params: [String: Any]) -> V2CallResult {
+        guard let hookIdStr = params["hook_id"] as? String,
+              let hookId = UUID(uuidString: hookIdStr) else {
+            return .err(code: "invalid_params", message: "Missing or invalid hook_id", data: nil)
+        }
+
+        var result: V2CallResult = .err(code: "internal_error", message: "Unexpected error", data: nil)
+        v2MainSync {
+            let removed = SurfaceHookManager.shared.unsetHook(hookId: hookId)
+            if removed {
+                result = .ok(["removed": true, "hook_id": hookId.uuidString])
+            } else {
+                result = .err(code: "not_found", message: "Hook not found", data: ["hook_id": hookId.uuidString])
             }
         }
         return result
