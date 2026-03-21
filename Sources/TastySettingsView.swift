@@ -1149,8 +1149,10 @@ struct TastyAutomationSettingsSection: View {
 struct TastyShortcutsSettingsSection: View {
     enum ShortcutTab: String, CaseIterable, Identifiable {
         case general
+        case workspace
         case navigation
         case panes
+        case surfaceGroup
         case panels
 
         var id: String { rawValue }
@@ -1158,8 +1160,10 @@ struct TastyShortcutsSettingsSection: View {
         var label: String {
             switch self {
             case .general: return String(localized: "settings.shortcuts.tab.general", defaultValue: "General")
+            case .workspace: return String(localized: "settings.shortcuts.tab.workspace", defaultValue: "Workspace")
             case .navigation: return String(localized: "settings.shortcuts.tab.navigation", defaultValue: "Navigation")
             case .panes: return String(localized: "settings.shortcuts.tab.panes", defaultValue: "Panes")
+            case .surfaceGroup: return String(localized: "settings.shortcuts.tab.surfaceGroup", defaultValue: "Surface Group")
             case .panels: return String(localized: "settings.shortcuts.tab.panels", defaultValue: "Panels")
             }
         }
@@ -1168,10 +1172,14 @@ struct TastyShortcutsSettingsSection: View {
             switch self {
             case .general:
                 return [.toggleSidebar, .newTab, .newWindow, .closeWindow, .openFolder, .sendFeedback, .showNotifications, .jumpToUnread, .triggerFlash]
+            case .workspace:
+                return [.nextSidebarTab, .prevSidebarTab, .renameTab, .renameWorkspace, .closeWorkspace]
             case .navigation:
-                return [.nextSurface, .prevSurface, .nextSidebarTab, .prevSidebarTab, .renameTab, .renameWorkspace, .closeWorkspace, .newSurface, .toggleTerminalCopyMode]
+                return [.nextSurface, .prevSurface, .newSurface, .toggleTerminalCopyMode]
             case .panes:
-                return [.focusLeft, .focusRight, .focusUp, .focusDown, .splitRight, .splitDown, .toggleSplitZoom, .splitBrowserRight, .splitBrowserDown, .createSurfaceGroup]
+                return [.focusLeft, .focusRight, .focusUp, .focusDown, .splitRight, .splitDown, .toggleSplitZoom, .splitBrowserRight, .splitBrowserDown]
+            case .surfaceGroup:
+                return [.createSurfaceGroup]
             case .panels:
                 return [.openBrowser, .toggleBrowserDeveloperTools, .showBrowserJavaScriptConsole]
             }
