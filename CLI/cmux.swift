@@ -10911,6 +10911,15 @@ struct CMUXCLI {
                 icon: "pause.circle.fill",
                 color: "#8E8E93"
             )
+
+            // Fire claude-idle surface hooks (used by conductor's --on-idle notify-parent)
+            if let surfaceId {
+                _ = try? client.sendV2(method: "surface.fire_hook", params: [
+                    "surface_id": surfaceId,
+                    "event": "claude-idle",
+                ])
+            }
+
             print("OK")
 
         case "prompt-submit":

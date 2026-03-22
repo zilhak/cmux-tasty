@@ -198,11 +198,6 @@ class TerminalController {
         let timestamp: Date
     }
     private var surfaceActivitySnapshots: [UUID: SurfaceActivitySnapshot] = [:]
-    /// Surfaces that are currently in "busy" state (content actively changing).
-    /// Used to detect busy→idle transitions for the claude-idle hook.
-    private var surfaceClaudeBusy: Set<UUID> = []
-    /// Timer that periodically checks surfaces with claude-idle hooks for busy→idle transitions.
-    private var claudeIdleCheckTimer: Timer?
 
     // MARK: - Claude Parent-Child Tracking
     private struct ClaudeChildEntry {
@@ -2474,6 +2469,8 @@ class TerminalController {
             return v2Result(id: id, self.v2SurfaceListHooks(params: params))
         case "surface.unset_hook":
             return v2Result(id: id, self.v2SurfaceUnsetHook(params: params))
+        case "surface.fire_hook":
+            return v2Result(id: id, self.v2SurfaceFireHook(params: params))
 
         case "workspace.claude_activity":
             return v2Result(id: id, self.v2WorkspaceClaudeActivity(params: params))
@@ -2621,6 +2618,7 @@ class TerminalController {
             "surface.set_hook",
             "surface.list_hooks",
             "surface.unset_hook",
+            "surface.fire_hook",
             "pane.list",
             "pane.focus",
             "pane.surfaces",
@@ -5807,20 +5805,6 @@ class TerminalController {
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
 
-                // Detect busy→idle transition for claude-idle hook.
-                // Claude Code shows ❯ prompt when idle. The prompt may not be the last line
-                // because Claude Code TUI renders separator lines (───) below it.
-                // So we check if ANY of the last lines contains ❯, not just the last non-empty line.
-                let hasIdlePrompt = lines.contains(where: { $0.contains("❯") })
-                if secondsSinceChange == 0 {
-                    // Content just changed — mark as busy
-                    surfaceClaudeBusy.insert(panelId)
-                } else if hasIdlePrompt && surfaceClaudeBusy.contains(panelId) {
-                    // Content stable with ❯ prompt and was previously busy — fire hook
-                    surfaceClaudeBusy.remove(panelId)
-                    SurfaceHookManager.shared.fire(event: .claudeIdle, surfaceId: panelId)
-                }
-
                 let title = ws.panelTitle(panelId: panelId) ?? terminalPanel.displayTitle
 
                 surfaceResults.append([
@@ -5988,11 +5972,6 @@ class TerminalController {
                 event: .claudeIdle,
                 command: hookCommand
             )
-            // Mark child as busy immediately so busy→idle transition can be detected
-            // even if the task completes before the first timer tick
-            surfaceClaudeBusy.insert(childSurfaceId)
-            // Start the idle check timer so we can detect when this child becomes idle
-            startClaudeIdleCheckTimerIfNeeded()
         }
 
         let childRef = v2Ref(kind: .surface, uuid: childSurfaceId)
@@ -16042,77 +16021,6 @@ class TerminalController {
         return result
     }
 
-    // MARK: - Claude Idle Check Timer
-
-    /// Start a periodic timer that checks surfaces with claude-idle hooks for busy→idle transitions.
-    /// Called after a claude-idle hook is registered. The timer runs every 3 seconds on the main thread.
-    func startClaudeIdleCheckTimerIfNeeded() {
-        guard claudeIdleCheckTimer == nil else { return }
-        claudeIdleCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.checkClaudeIdleSurfaces()
-            }
-        }
-    }
-
-    /// Stop the idle check timer when no claude-idle hooks are registered.
-    func stopClaudeIdleCheckTimerIfNeeded() {
-        let surfaces = SurfaceHookManager.shared.surfacesWithHooks(for: .claudeIdle)
-        if surfaces.isEmpty {
-            claudeIdleCheckTimer?.invalidate()
-            claudeIdleCheckTimer = nil
-        }
-    }
-
-    /// Check all surfaces that have claude-idle hooks for busy→idle transitions.
-    /// Uses read-screen to check the status bar for "esc to interrupt" (busy indicator).
-    /// When "esc to interrupt" disappears but "bypass permissions" remains, it's idle.
-    private func checkClaudeIdleSurfaces() {
-        let surfaceIds = SurfaceHookManager.shared.surfacesWithHooks(for: .claudeIdle)
-        guard !surfaceIds.isEmpty else {
-            stopClaudeIdleCheckTimerIfNeeded()
-            return
-        }
-
-        guard let tabManager = self.tabManager else { return }
-
-        for surfaceId in surfaceIds {
-            // Find the terminal panel for this surface across all workspaces
-            var terminalPanel: TerminalPanel?
-            var workspace: Workspace?
-            for ws in tabManager.tabs {
-                if let panel = ws.terminalPanel(for: surfaceId) {
-                    terminalPanel = panel
-                    workspace = ws
-                    break
-                }
-            }
-            guard let panel = terminalPanel, workspace != nil else { continue }
-
-            // Read last 2 lines of screen to check status bar
-            let response = readTerminalTextBase64(
-                terminalPanel: panel,
-                includeScrollback: true,
-                lineLimit: 3
-            )
-            guard response.hasPrefix("OK ") else { continue }
-            let base64 = String(response.dropFirst(3))
-            guard let data = Data(base64Encoded: base64),
-                  let text = String(data: data, encoding: .utf8) else { continue }
-
-            let isBusy = text.contains("esc to interrupt")
-            let isClaudeIdle = text.contains("bypass permissions") && !isBusy
-
-            if isBusy {
-                surfaceClaudeBusy.insert(surfaceId)
-            } else if isClaudeIdle && surfaceClaudeBusy.contains(surfaceId) {
-                // Transition from busy to idle — fire hook
-                surfaceClaudeBusy.remove(surfaceId)
-                SurfaceHookManager.shared.fire(event: .claudeIdle, surfaceId: surfaceId)
-            }
-        }
-    }
-
     // MARK: - Surface Hooks
 
     private func v2SurfaceSetHook(params: [String: Any]) -> V2CallResult {
@@ -16135,10 +16043,6 @@ class TerminalController {
         v2MainSync {
             let hook = SurfaceHookManager.shared.setHook(surfaceId: surfaceId, event: event, command: command)
             result = .ok(hook.toDictionary())
-            // Start idle check timer if a claude-idle hook was registered
-            if event == .claudeIdle {
-                self.startClaudeIdleCheckTimerIfNeeded()
-            }
         }
         return result
     }
@@ -16184,6 +16088,26 @@ class TerminalController {
             } else {
                 result = .err(code: "not_found", message: "Hook not found", data: ["hook_id": hookId.uuidString])
             }
+        }
+        return result
+    }
+
+    private func v2SurfaceFireHook(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+        guard let eventStr = params["event"] as? String else {
+            return .err(code: "invalid_params", message: "Missing event", data: nil)
+        }
+        guard let event = SurfaceHookManager.Event(rawValue: eventStr) else {
+            let valid = SurfaceHookManager.Event.allCases.map(\.rawValue).joined(separator: ", ")
+            return .err(code: "invalid_params", message: "Unknown event '\(eventStr)'. Valid events: \(valid)", data: nil)
+        }
+
+        var result: V2CallResult = .err(code: "internal_error", message: "Unexpected error", data: nil)
+        v2MainSync {
+            SurfaceHookManager.shared.fire(event: event, surfaceId: surfaceId)
+            result = .ok(["fired": true, "surface_id": surfaceId.uuidString, "event": event.rawValue])
         }
         return result
     }
