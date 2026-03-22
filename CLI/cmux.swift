@@ -2404,7 +2404,6 @@ struct CMUXCLI {
             var params: [String: Any] = [:]
             if let fileArg {
                 params["file"] = fileArg
-                // --file implies bracket paste unless explicitly disabled
                 params["bracket_paste"] = true
             } else {
                 let rawText = rem3.dropFirst(rem3.first == "--" ? 1 : 0).joined(separator: " ")
@@ -2413,12 +2412,12 @@ struct CMUXCLI {
                 params["text"] = text
             }
             if hasBracketPaste { params["bracket_paste"] = true }
+            if waitIdleArg { params["wait_idle"] = true }
             let wsId = try normalizeWorkspaceHandle(workspaceArg, client: client)
             if let wsId { params["workspace_id"] = wsId }
             let sfId = try normalizeSurfaceHandle(surfaceArg, client: client, workspaceHandle: wsId)
             if let sfId { params["surface_id"] = sfId }
-            let method = waitIdleArg ? "surface.send_text_wait_idle" : "surface.send_text"
-            let payload = try client.sendV2(method: method, params: params)
+            let payload = try client.sendV2(method: "surface.send_text", params: params)
             printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: v2OKSummary(payload, idFormat: idFormat))
 
         case "send-key":
@@ -7439,12 +7438,17 @@ struct CMUXCLI {
               --file <path>          Send file contents as pasted text (implies --bracket-paste)
               --bracket-paste        Wrap text in bracket paste sequences (\\e[200~ / \\e[201~)
                                      so multiline text is treated as a single paste, not line-by-line
+              --wait-idle            Queue text server-side and deliver when the target surface
+                                     is idle (Claude prompt ❯ visible). A follow-up newline is
+                                     sent automatically after 1s. Concurrent --wait-idle sends
+                                     are serialized to prevent message interleaving.
 
             Example:
               cmux send "echo hello"
               cmux send --surface surface:2 "ls -la\\n"
               cmux send --file /tmp/script.sh
               cmux send --bracket-paste "line1\\nline2\\nline3"
+              cmux send --wait-idle --surface surface:1 "check status"
             """
         case "send-key":
             return """
