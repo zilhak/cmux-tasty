@@ -6028,16 +6028,26 @@ class TerminalController {
                 result = .err(code: "not_found", message: "Workspace not found", data: nil)
                 return
             }
-            guard ws.panels[parentSurfaceId] != nil else {
-                result = .err(code: "not_found", message: "Parent surface not found", data: ["surface_id": parentSurfaceId.uuidString])
+            // Determine which surface to split next to.
+            // If parent is in this workspace, split next to parent.
+            // Otherwise (cross-workspace spawn), split next to the focused or any terminal surface.
+            let splitTargetId: UUID?
+            if ws.panels[parentSurfaceId] != nil {
+                splitTargetId = parentSurfaceId
+            } else {
+                // Cross-workspace: find a terminal surface to split next to
+                splitTargetId = ws.focusedPanelId ?? ws.panels.keys.first(where: { ws.terminalPanel(for: $0) != nil })
+            }
+            guard let splitTarget = splitTargetId, ws.panels[splitTarget] != nil else {
+                result = .err(code: "not_found", message: "No suitable surface found in target workspace", data: ["surface_id": parentSurfaceId.uuidString])
                 return
             }
             resolvedWs = ws
             resolvedWindowId = v2ResolveWindowId(tabManager: tabManager)
 
-            // Split right from parent. Default: no focus change.
+            // Split right from target surface. Default: no focus change.
             let shouldFocus = (params["focus"] as? Bool) ?? false
-            if let nid = tabManager.newSplit(tabId: ws.id, surfaceId: parentSurfaceId, direction: .right, focus: shouldFocus) {
+            if let nid = tabManager.newSplit(tabId: ws.id, surfaceId: splitTarget, direction: .right, focus: shouldFocus) {
                 newSurfaceId = nid
             }
         }
