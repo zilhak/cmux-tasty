@@ -6085,13 +6085,22 @@ class TerminalController {
                             }
                             if !lines.isEmpty { lines.removeLast() }
                             let lastNonEmpty = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
-                            let isIdle = lastNonEmpty?.contains("❯") == true
+                            // Check if last non-empty line starts with ❯ (Claude Code prompt).
+                            // Using hasPrefix instead of contains to avoid false positives
+                            // from ❯ appearing in command output or tool results.
+                            let trimmedLast = lastNonEmpty?.trimmingCharacters(in: .whitespaces) ?? ""
+                            let isIdle = trimmedLast.hasPrefix("❯")
+                            let contentLineCount = lines.count
                             let now = Date()
                             let prevSnapshot = surfaceActivitySnapshots[childId]
                             let secondsSinceChange: Double
-                            if let prev = prevSnapshot {
+                            if let prev = prevSnapshot, prev.contentLineCount == contentLineCount {
                                 secondsSinceChange = now.timeIntervalSince(prev.timestamp)
                             } else {
+                                surfaceActivitySnapshots[childId] = SurfaceActivitySnapshot(
+                                    contentLineCount: contentLineCount,
+                                    timestamp: now
+                                )
                                 secondsSinceChange = 0
                             }
                             let lastLines = Array(lines.suffix(5))
