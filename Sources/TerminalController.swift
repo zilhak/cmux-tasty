@@ -5977,10 +5977,12 @@ class TerminalController {
         // Step 7: Register claude-idle hook if on_idle == "notify-parent"
         if onIdle == "notify-parent" {
             let parentRef = v2MainSync { v2Ref(kind: .surface, uuid: parentSurfaceId) } as? String ?? parentSurfaceId.uuidString
+            let wsRef = v2MainSync { resolvedWs.map { v2Ref(kind: .workspace, uuid: $0.id) } as? String } ?? ""
+            let wsFlag = wsRef.isEmpty ? "" : " --workspace \(wsRef)"
             // Use bundled CLI path for hook command (falls back to PATH cmux)
             let cliPath = Bundle.main.url(forResource: "cmux", withExtension: nil, subdirectory: "bin")?.path ?? "cmux"
             let msg = "Child child:\(childIndex) idle 전환됨. claude-children으로 상태를 점검하고 완료 여부를 판단하라."
-            let hookCommand = "\(cliPath) send --surface \(parentRef) \"\(msg)\" && sleep 1 && \(cliPath) send --surface \(parentRef) '\\n' && \(cliPath) notify --title 'Worker Idle' --body 'child:\(childIndex)'"
+            let hookCommand = "\(cliPath) send --surface \(parentRef)\(wsFlag) \"\(msg)\" && sleep 1 && \(cliPath) send --surface \(parentRef)\(wsFlag) '\\n' && \(cliPath) notify --title 'Worker Idle' --body 'child:\(childIndex)'"
             SurfaceHookManager.shared.setHook(
                 surfaceId: childSurfaceId,
                 event: .claudeIdle,
