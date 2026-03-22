@@ -201,6 +201,8 @@ class TerminalController {
     /// Surfaces that are currently in "busy" state (content actively changing).
     /// Used to detect busy→idle transitions for the claude-idle hook.
     private var surfaceClaudeBusy: Set<UUID> = []
+    /// Timer that periodically checks surfaces with claude-idle hooks for busy→idle transitions.
+    private var claudeIdleCheckTimer: Timer?
 
     // MARK: - Claude Parent-Child Tracking
     private struct ClaudeChildEntry {
@@ -5984,6 +5986,8 @@ class TerminalController {
                 event: .claudeIdle,
                 command: hookCommand
             )
+            // Start the idle check timer so we can detect when this child becomes idle
+            startClaudeIdleCheckTimerIfNeeded()
         }
 
         let childRef = v2Ref(kind: .surface, uuid: childSurfaceId)
@@ -16033,6 +16037,45 @@ class TerminalController {
         return result
     }
 
+    // MARK: - Claude Idle Check Timer
+
+    /// Start a periodic timer that checks surfaces with claude-idle hooks for busy→idle transitions.
+    /// Called after a claude-idle hook is registered. The timer runs every 3 seconds on the main thread.
+    func startClaudeIdleCheckTimerIfNeeded() {
+        guard claudeIdleCheckTimer == nil else { return }
+        claudeIdleCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.checkClaudeIdleSurfaces()
+            }
+        }
+    }
+
+    /// Stop the idle check timer when no claude-idle hooks are registered.
+    func stopClaudeIdleCheckTimerIfNeeded() {
+        let surfaces = SurfaceHookManager.shared.surfacesWithHooks(for: .claudeIdle)
+        if surfaces.isEmpty {
+            claudeIdleCheckTimer?.invalidate()
+            claudeIdleCheckTimer = nil
+        }
+    }
+
+    /// Check all surfaces that have claude-idle hooks for busy→idle transitions.
+    /// Triggers v2WorkspaceClaudeActivity on relevant workspaces, which contains the idle detection logic.
+    private func checkClaudeIdleSurfaces() {
+        let surfaceIds = SurfaceHookManager.shared.surfacesWithHooks(for: .claudeIdle)
+        guard !surfaceIds.isEmpty else {
+            stopClaudeIdleCheckTimerIfNeeded()
+            return
+        }
+
+        guard let tabManager = self.tabManager else { return }
+        // Trigger claude_activity on all workspaces — the idle detection inside will
+        // fire hooks for any surfaces that transitioned from busy to idle.
+        for ws in tabManager.tabs {
+            _ = self.v2WorkspaceClaudeActivity(params: ["workspace_id": ws.id.uuidString])
+        }
+    }
+
     // MARK: - Surface Hooks
 
     private func v2SurfaceSetHook(params: [String: Any]) -> V2CallResult {
@@ -16055,6 +16098,10 @@ class TerminalController {
         v2MainSync {
             let hook = SurfaceHookManager.shared.setHook(surfaceId: surfaceId, event: event, command: command)
             result = .ok(hook.toDictionary())
+            // Start idle check timer if a claude-idle hook was registered
+            if event == .claudeIdle {
+                self.startClaudeIdleCheckTimerIfNeeded()
+            }
         }
         return result
     }

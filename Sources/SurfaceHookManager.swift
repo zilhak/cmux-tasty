@@ -89,6 +89,13 @@ final class SurfaceHookManager {
         hooks.removeValue(forKey: surfaceId)
     }
 
+    /// Returns all surface IDs that have hooks registered for the given event.
+    func surfacesWithHooks(for event: Event) -> [UUID] {
+        hooks.compactMap { (surfaceId, eventMap) in
+            eventMap[event]?.isEmpty == false ? surfaceId : nil
+        }
+    }
+
     // MARK: - Firing
 
     /// Fire all hooks registered for the given event on a surface.
