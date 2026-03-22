@@ -9667,6 +9667,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return true
         }
 
+        // Surface group directional focus
+        if matchDirectionalShortcut(
+            event: event,
+            shortcut: KeyboardShortcutSettings.shortcut(for: .sgFocusLeft),
+            arrowGlyph: "←",
+            arrowKeyCode: 123
+        ) {
+            if let workspace = tabManager?.selectedWorkspace {
+                workspace.moveFocusInSurfaceGroup(direction: .left)
+            }
+            return true
+        }
+        if matchDirectionalShortcut(
+            event: event,
+            shortcut: KeyboardShortcutSettings.shortcut(for: .sgFocusRight),
+            arrowGlyph: "→",
+            arrowKeyCode: 124
+        ) {
+            if let workspace = tabManager?.selectedWorkspace {
+                workspace.moveFocusInSurfaceGroup(direction: .right)
+            }
+            return true
+        }
+        if matchDirectionalShortcut(
+            event: event,
+            shortcut: KeyboardShortcutSettings.shortcut(for: .sgFocusUp),
+            arrowGlyph: "↑",
+            arrowKeyCode: 126
+        ) {
+            if let workspace = tabManager?.selectedWorkspace {
+                workspace.moveFocusInSurfaceGroup(direction: .up)
+            }
+            return true
+        }
+        if matchDirectionalShortcut(
+            event: event,
+            shortcut: KeyboardShortcutSettings.shortcut(for: .sgFocusDown),
+            arrowGlyph: "↓",
+            arrowKeyCode: 125
+        ) {
+            if let workspace = tabManager?.selectedWorkspace {
+                workspace.moveFocusInSurfaceGroup(direction: .down)
+            }
+            return true
+        }
+
         // Open browser: Cmd+Shift+L
         if matchActionShortcut(event: event, action: .openBrowser) {
             _ = openBrowserAndFocusAddressBar(insertAtEnd: true)

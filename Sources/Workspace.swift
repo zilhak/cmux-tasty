@@ -5157,6 +5157,13 @@ final class Workspace: Identifiable, ObservableObject {
         children[prevIndex].focus()
     }
 
+    /// Move focus in the given direction within the currently focused SurfaceGroup.
+    @discardableResult
+    func moveFocusInSurfaceGroup(direction: SplitDirection) -> Bool {
+        guard let group = focusedSurfaceGroup() else { return false }
+        return group.moveFocus(direction)
+    }
+
     /// Returns the SurfaceGroup in the currently focused pane, if any.
     private func focusedSurfaceGroup() -> SurfaceGroup? {
         guard let focusedPaneId = bonsplitController.focusedPaneId,

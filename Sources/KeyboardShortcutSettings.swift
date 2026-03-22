@@ -48,6 +48,10 @@ enum KeyboardShortcutSettings {
         case sgPrevChild
         case sgSplitRight
         case sgSplitDown
+        case sgFocusLeft
+        case sgFocusRight
+        case sgFocusUp
+        case sgFocusDown
 
         // Panels
         case openBrowser
@@ -92,6 +96,10 @@ enum KeyboardShortcutSettings {
             case .sgPrevChild: return String(localized: "shortcut.sgPrevChild.label", defaultValue: "Previous Child in Group")
             case .sgSplitRight: return String(localized: "shortcut.sgSplitRight.label", defaultValue: "Split Right in Group")
             case .sgSplitDown: return String(localized: "shortcut.sgSplitDown.label", defaultValue: "Split Down in Group")
+            case .sgFocusLeft: return String(localized: "shortcut.sgFocusLeft.label", defaultValue: "Focus Left in Group")
+            case .sgFocusRight: return String(localized: "shortcut.sgFocusRight.label", defaultValue: "Focus Right in Group")
+            case .sgFocusUp: return String(localized: "shortcut.sgFocusUp.label", defaultValue: "Focus Up in Group")
+            case .sgFocusDown: return String(localized: "shortcut.sgFocusDown.label", defaultValue: "Focus Down in Group")
             case .openBrowser: return String(localized: "shortcut.openBrowser.label", defaultValue: "Open Browser")
             case .toggleBrowserDeveloperTools: return String(localized: "shortcut.toggleBrowserDevTools.label", defaultValue: "Toggle Browser Developer Tools")
             case .showBrowserJavaScriptConsole: return String(localized: "shortcut.showBrowserJSConsole.label", defaultValue: "Show Browser JavaScript Console")
@@ -176,6 +184,14 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "d", command: true, shift: false, option: false, control: true)
             case .sgSplitDown:
                 return StoredShortcut(key: "d", command: true, shift: true, option: false, control: true)
+            case .sgFocusLeft:
+                return StoredShortcut(key: "←", command: true, shift: false, option: false, control: true)
+            case .sgFocusRight:
+                return StoredShortcut(key: "→", command: true, shift: false, option: false, control: true)
+            case .sgFocusUp:
+                return StoredShortcut(key: "↑", command: true, shift: false, option: false, control: true)
+            case .sgFocusDown:
+                return StoredShortcut(key: "↓", command: true, shift: false, option: false, control: true)
             case .openBrowser:
                 return StoredShortcut(key: "l", command: true, shift: true, option: false, control: false)
             case .toggleBrowserDeveloperTools:
