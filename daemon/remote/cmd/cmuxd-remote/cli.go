@@ -69,7 +69,7 @@ var commands = []commandSpec{
 	{name: "list-pane-surfaces", proto: protoV2, v2Method: "pane.surfaces", flagKeys: []string{"pane"}},
 	{name: "new-pane", proto: protoV2, v2Method: "pane.create", flagKeys: []string{"workspace", "direction", "type", "url"}, defaultParams: map[string]any{"direction": "right"}},
 	{name: "new-surface", proto: protoV2, v2Method: "surface.create", flagKeys: []string{"workspace", "pane", "type", "url"}},
-	{name: "new-split", proto: protoV2, v2Method: "surface.split", flagKeys: []string{"surface", "direction"}},
+	{name: "new-split", proto: protoV2, v2Method: "surface.split", flagKeys: []string{"surface", "direction", "type", "url", "file"}},
 	{name: "close-surface", proto: protoV2, v2Method: "surface.close", flagKeys: []string{"surface"}},
 	{name: "send", proto: protoV2, v2Method: "surface.send_text", flagKeys: []string{"surface", "text"}},
 	{name: "send-key", proto: protoV2, v2Method: "surface.send_key", flagKeys: []string{"surface", "key"}},

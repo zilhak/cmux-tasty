@@ -1684,9 +1684,12 @@ struct CMUXCLI {
             let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
             let (panelArg, rem1) = parseOption(rem0, name: "--panel")
             let (sfArg, rem2) = parseOption(rem1, name: "--surface")
+            let (typeArg, rem3) = parseOption(rem2, name: "--type")
+            let (urlArg, rem4) = parseOption(rem3, name: "--url")
+            let (fileArg, rem5) = parseOption(rem4, name: "--file")
             let workspaceArg = wsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
             let surfaceRaw = sfArg ?? panelArg ?? (wsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
-            guard let direction = rem2.first else {
+            guard let direction = rem5.first else {
                 throw CLIError(message: "new-split requires a direction")
             }
             var params: [String: Any] = ["direction": direction]
@@ -1694,6 +1697,9 @@ struct CMUXCLI {
             if let wsId { params["workspace_id"] = wsId }
             let sfId = try normalizeSurfaceHandle(surfaceRaw, client: client, workspaceHandle: wsId)
             if let sfId { params["surface_id"] = sfId }
+            if let typeArg { params["type"] = typeArg }
+            if let urlArg { params["url"] = urlArg }
+            if let fileArg { params["file"] = fileArg }
             let payload = try client.sendV2(method: "surface.split", params: params)
             printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: v2OKSummary(payload, idFormat: idFormat))
 
@@ -6753,10 +6759,15 @@ struct CMUXCLI {
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
               --surface <id|ref>     Surface to split from (default: $CMUX_SURFACE_ID)
               --panel <id|ref>       Alias for --surface
+              --type <type>          Panel type: terminal (default), browser, markdown
+              --url <url>            URL to open (browser type only)
+              --file <path>          File path to open (markdown type, required)
 
             Example:
               cmux new-split right
               cmux new-split down --workspace workspace:1
+              cmux new-split right --type browser --url https://example.com
+              cmux new-split right --type markdown --file ./README.md
             """
         case "list-panes":
             return """
