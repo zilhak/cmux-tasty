@@ -199,6 +199,23 @@ class TerminalController {
     }
     private var surfaceActivitySnapshots: [UUID: SurfaceActivitySnapshot] = [:]
 
+    // MARK: - Wait-Idle Send Queue
+    /// Queued text items waiting to be delivered when the target surface becomes idle.
+    private struct PendingSendItem {
+        let text: String
+        let enqueuedAt: Date
+        /// Weak reference to the tab manager that contains the target surface.
+        weak var tabManager: TabManager?
+    }
+    /// Target surface ID → queue of pending items (FIFO).
+    private var pendingSendQueue: [UUID: [PendingSendItem]] = [:]
+    /// Timer that periodically drains the pending send queue.
+    private var pendingSendDrainTimer: DispatchSourceTimer?
+    /// Interval between drain attempts (seconds).
+    private let pendingSendDrainInterval: TimeInterval = 2.0
+    /// Maximum age for a queued item before it is discarded (seconds).
+    private let pendingSendMaxAge: TimeInterval = 300.0
+
     // MARK: - Claude Parent-Child Tracking
     private struct ClaudeChildEntry {
         let childSurfaceId: UUID
@@ -5511,6 +5528,7 @@ class TerminalController {
         guard let text = params["text"] as? String else {
             return .err(code: "invalid_params", message: "Missing text", data: nil)
         }
+        let waitIdle = (params["wait_idle"] as? Bool) == true
 
         var result: V2CallResult = .err(code: "internal_error", message: "Failed to send text", data: nil)
         v2MainSync {
@@ -5527,6 +5545,26 @@ class TerminalController {
                 result = .err(code: "invalid_params", message: "Surface is not a terminal", data: ["surface_id": surfaceId.uuidString])
                 return
             }
+
+            // Wait-idle mode: queue the text if the target surface is busy or has pending items.
+            if waitIdle {
+                let hasPending = !(pendingSendQueue[surfaceId]?.isEmpty ?? true)
+                let idle = !hasPending && isTerminalSurfaceIdle(terminalPanel)
+                if !idle {
+                    enqueuePendingSend(surfaceId: surfaceId, text: text, tabManager: tabManager)
+                    result = .ok([
+                        "workspace_id": ws.id.uuidString,
+                        "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+                        "surface_id": surfaceId.uuidString,
+                        "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+                        "queued": true,
+                        "queue_depth": (pendingSendQueue[surfaceId]?.count ?? 0),
+                    ])
+                    return
+                }
+                // Surface is idle and no pending items — fall through to send immediately
+            }
+
             #if DEBUG
             let sendStart = ProcessInfo.processInfo.systemUptime
             #endif
@@ -6034,9 +6072,10 @@ class TerminalController {
             // Use bundled CLI path for hook command (falls back to PATH cmux)
             let cliPath = Bundle.main.url(forResource: "cmux", withExtension: nil, subdirectory: "bin")?.path ?? "cmux"
 
-            // 7a: claude-idle hook
+            // 7a: claude-idle hook — uses --wait-idle so concurrent idle notifications
+            // are queued server-side and delivered one at a time when parent is idle.
             let idleMsg = "Child child:\(childIndex) idle 전환됨. claude-children으로 상태를 점검하고 완료 여부를 판단하라."
-            let idleHookCommand = "\(cliPath) send --surface \(parentRef)\(wsFlag) \"\(idleMsg)\" && sleep 1 && \(cliPath) send --surface \(parentRef)\(wsFlag) '\\n' && \(cliPath) notify --title 'Worker Idle' --body 'child:\(childIndex)'"
+            let idleHookCommand = "\(cliPath) send --wait-idle --surface \(parentRef)\(wsFlag) \"\(idleMsg)\" && \(cliPath) notify --title 'Worker Idle' --body 'child:\(childIndex)'"
             SurfaceHookManager.shared.setHook(
                 surfaceId: childSurfaceId,
                 event: .claudeIdle,
@@ -6045,7 +6084,7 @@ class TerminalController {
 
             // 7b: process-exit hook — notify parent when child process terminates
             let exitMsg = "Child child:\(childIndex) 종료됨(exit). claude-children으로 상태를 점검하라."
-            let exitHookCommand = "\(cliPath) send --surface \(parentRef)\(wsFlag) --wait-idle \"\(exitMsg)\" && sleep 1 && \(cliPath) send --surface \(parentRef)\(wsFlag) '\\n' && \(cliPath) notify --title 'Worker Exit' --body 'child:\(childIndex)'"
+            let exitHookCommand = "\(cliPath) send --wait-idle --surface \(parentRef)\(wsFlag) \"\(exitMsg)\" && \(cliPath) notify --title 'Worker Exit' --body 'child:\(childIndex)'"
             SurfaceHookManager.shared.setHook(
                 surfaceId: childSurfaceId,
                 event: .processExit,
@@ -6322,6 +6361,120 @@ class TerminalController {
 
         let base64 = output.data(using: .utf8)?.base64EncodedString() ?? ""
         return "OK \(base64)"
+    }
+
+    // MARK: - Wait-Idle Queue Helpers
+
+    /// Check whether a terminal surface is idle (Claude Code prompt `❯` visible on last non-empty line).
+    /// Must be called on the main thread.
+    private func isTerminalSurfaceIdle(_ terminalPanel: TerminalPanel) -> Bool {
+        let response = readTerminalTextBase64(terminalPanel: terminalPanel, includeScrollback: false)
+        guard response.hasPrefix("OK ") else { return false }
+        let base64 = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let text = Data(base64Encoded: base64).flatMap({ String(data: $0, encoding: .utf8) }) else { return false }
+        var lines = text.components(separatedBy: "\n")
+        // Remove trailing empty lines (terminal padding)
+        while lines.last?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+            lines.removeLast()
+        }
+        // Remove the very last line (cursor line)
+        if !lines.isEmpty { lines.removeLast() }
+        let lastNonEmpty = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+        return lastNonEmpty?.contains("❯") == true
+    }
+
+    /// Enqueue text to be sent to a surface when it becomes idle.
+    /// Must be called on the main thread.
+    private func enqueuePendingSend(surfaceId: UUID, text: String, tabManager: TabManager) {
+        let item = PendingSendItem(text: text, enqueuedAt: Date(), tabManager: tabManager)
+        pendingSendQueue[surfaceId, default: []].append(item)
+        startPendingSendDrainTimerIfNeeded()
+    }
+
+    /// Start the drain timer if not already running.
+    private func startPendingSendDrainTimerIfNeeded() {
+        guard pendingSendDrainTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + pendingSendDrainInterval, repeating: pendingSendDrainInterval)
+        timer.setEventHandler { [weak self] in
+            self?.drainPendingSendQueue()
+        }
+        timer.resume()
+        pendingSendDrainTimer = timer
+    }
+
+    /// Stop the drain timer.
+    private func stopPendingSendDrainTimer() {
+        pendingSendDrainTimer?.cancel()
+        pendingSendDrainTimer = nil
+    }
+
+    /// Attempt to deliver queued items for each surface. Called on main thread by the timer.
+    private func drainPendingSendQueue() {
+        let now = Date()
+        var emptied: [UUID] = []
+
+        for (surfaceId, var items) in pendingSendQueue {
+            // Expire old items
+            items.removeAll { now.timeIntervalSince($0.enqueuedAt) > pendingSendMaxAge }
+            if items.isEmpty {
+                emptied.append(surfaceId)
+                continue
+            }
+
+            // Use the tabManager from the first item to locate the surface
+            guard let tabManager = items.first?.tabManager else {
+                emptied.append(surfaceId)
+                continue
+            }
+
+            // Find the terminal panel for this surface
+            guard let ws = tabManager.tabs.first(where: { $0.panels[surfaceId] != nil }),
+                  let terminalPanel = ws.terminalPanel(for: surfaceId),
+                  let surface = terminalPanel.surface.surface else {
+                // Surface gone — discard queue
+                emptied.append(surfaceId)
+                continue
+            }
+
+            // Check idle state
+            guard isTerminalSurfaceIdle(terminalPanel) else {
+                pendingSendQueue[surfaceId] = items
+                continue
+            }
+
+            // Deliver the first queued item
+            let item = items.removeFirst()
+            sendSocketText(item.text, surface: surface)
+            terminalPanel.surface.forceRefresh(reason: "terminalController.drainPendingSendQueue")
+
+            // Schedule a follow-up newline after 1 second to submit the prompt
+            let capturedSurfaceId = surfaceId
+            let capturedTabManager = tabManager
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self, weak capturedTabManager] in
+                guard let self, let tm = capturedTabManager else { return }
+                if let ws = tm.tabs.first(where: { $0.panels[capturedSurfaceId] != nil }),
+                   let tp = ws.terminalPanel(for: capturedSurfaceId),
+                   let s = tp.surface.surface {
+                    self.sendSocketText("\n", surface: s)
+                    tp.surface.forceRefresh(reason: "terminalController.drainPendingSendQueue.newline")
+                }
+            }
+
+            if items.isEmpty {
+                emptied.append(surfaceId)
+            } else {
+                pendingSendQueue[surfaceId] = items
+            }
+        }
+
+        for id in emptied {
+            pendingSendQueue.removeValue(forKey: id)
+        }
+
+        if pendingSendQueue.isEmpty {
+            stopPendingSendDrainTimer()
+        }
     }
 
     private struct PasteboardItemSnapshot {

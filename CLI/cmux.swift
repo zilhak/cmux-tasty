@@ -2394,9 +2394,11 @@ struct CMUXCLI {
         case "send":
             let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
             let (sfArg, rem1) = parseOption(rem0, name: "--surface")
+            let waitIdle = rem1.contains("--wait-idle")
+            let rem1b = rem1.filter { $0 != "--wait-idle" }
             let workspaceArg = wsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
             let surfaceArg = sfArg ?? (wsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
-            let rawText = rem1.dropFirst(rem1.first == "--" ? 1 : 0).joined(separator: " ")
+            let rawText = rem1b.dropFirst(rem1b.first == "--" ? 1 : 0).joined(separator: " ")
             guard !rawText.isEmpty else { throw CLIError(message: "send requires text") }
             let text = unescapeSendText(rawText)
             var params: [String: Any] = ["text": text]
@@ -2404,6 +2406,7 @@ struct CMUXCLI {
             if let wsId { params["workspace_id"] = wsId }
             let sfId = try normalizeSurfaceHandle(surfaceArg, client: client, workspaceHandle: wsId)
             if let sfId { params["surface_id"] = sfId }
+            if waitIdle { params["wait_idle"] = true }
             let payload = try client.sendV2(method: "surface.send_text", params: params)
             printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: v2OKSummary(payload, idFormat: idFormat))
 
@@ -7395,10 +7398,15 @@ struct CMUXCLI {
             Flags:
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
               --surface <id|ref>     Target surface (default: $CMUX_SURFACE_ID)
+              --wait-idle            Queue text server-side and deliver when the target surface
+                                     is idle (Claude prompt ❯ visible). A follow-up newline is
+                                     sent automatically after 1s. Concurrent --wait-idle sends
+                                     are serialized to prevent message interleaving.
 
             Example:
               cmux send "echo hello"
               cmux send --surface surface:2 "ls -la\\n"
+              cmux send --wait-idle --surface surface:1 "check status"
             """
         case "send-key":
             return """
