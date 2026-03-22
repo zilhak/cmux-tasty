@@ -213,6 +213,15 @@ class TerminalController {
     /// Next child index counter per parent
     private var claudeNextChildIndex: [UUID: Int] = [:]
 
+    /// Per-surface last key input timestamp (systemUptime).
+    /// Used by `surface.is_typing` / `send --wait-idle` to detect user typing.
+    private var lastKeyInputTimeBySurface: [UUID: TimeInterval] = [:]
+    /// Idle threshold for typing detection (seconds).
+    private static let typingIdleThreshold: TimeInterval = 5.0
+
+    /// Pending messages queued while the target surface user is typing.
+    private var pendingSendQueue: [UUID: [(text: String, surface: ghostty_surface_t)]] = [:]
+
     private var v2BrowserFrameSelectorBySurface: [UUID: String] = [:]
     private var v2BrowserInitScriptsBySurface: [UUID: [String]] = [:]
     private var v2BrowserInitStylesBySurface: [UUID: [String]] = [:]
@@ -891,6 +900,30 @@ class TerminalController {
         default:
             return nil
         }
+    }
+
+    // MARK: - Per-surface typing activity
+
+    /// Record a key input event for the given surface.
+    func recordSurfaceTypingActivity(surfaceId: UUID, at timestamp: TimeInterval) {
+        lastKeyInputTimeBySurface[surfaceId] = timestamp
+    }
+
+    /// Check whether the user is currently typing in the given surface.
+    /// Returns true if the surface is focused AND had key input within
+    /// `typingIdleThreshold` seconds.
+    func isSurfaceTyping(surfaceId: UUID) -> Bool {
+        guard let tabManager else { return false }
+        // If the surface is not focused, user is definitely not typing there.
+        guard let ws = tabManager.tabs.first(where: { $0.panels[surfaceId] != nil }),
+              ws.focusedPanelId == surfaceId else {
+            return false
+        }
+        guard let lastInput = lastKeyInputTimeBySurface[surfaceId] else {
+            return false
+        }
+        let elapsed = ProcessInfo.processInfo.systemUptime - lastInput
+        return elapsed < Self.typingIdleThreshold
     }
 
     func start(tabManager: TabManager, socketPath: String, accessMode: SocketControlMode) {
@@ -2232,8 +2265,12 @@ class TerminalController {
             return v2Result(id: id, self.v2SurfaceHealth(params: params))
         case "debug.terminals":
             return v2Result(id: id, self.v2DebugTerminals(params: params))
+        case "surface.is_typing":
+            return v2Result(id: id, self.v2SurfaceIsTyping(params: params))
         case "surface.send_text":
             return v2Result(id: id, self.v2SurfaceSendText(params: params))
+        case "surface.send_text_wait_idle":
+            return v2Result(id: id, self.v2SurfaceSendTextWaitIdle(params: params))
         case "surface.send_key":
             return v2Result(id: id, self.v2SurfaceSendKey(params: params))
         case "surface.clear_history":
@@ -2603,7 +2640,9 @@ class TerminalController {
             "surface.refresh",
             "surface.health",
             "debug.terminals",
+            "surface.is_typing",
             "surface.send_text",
+            "surface.send_text_wait_idle",
             "surface.send_key",
             "surface.read_text",
             "surface.set_read_mark",
@@ -5502,6 +5541,66 @@ class TerminalController {
         return .ok(payload)
     }
 
+    private func v2SurfaceIsTyping(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+        let typing = isSurfaceTyping(surfaceId: surfaceId)
+        let lastInput = lastKeyInputTimeBySurface[surfaceId]
+        let elapsed: TimeInterval? = lastInput.map { ProcessInfo.processInfo.systemUptime - $0 }
+        var data: [String: Any] = [
+            "is_typing": typing,
+            "surface_id": surfaceId.uuidString,
+            "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+            "threshold_seconds": Self.typingIdleThreshold
+        ]
+        if let elapsed {
+            data["idle_seconds"] = round(elapsed * 100) / 100
+        }
+        return .ok(data)
+    }
+
+    /// Send text to a surface, but wait until the user stops typing first.
+    /// Blocks the socket handler thread (up to `timeout` seconds) polling
+    /// for typing idle. This is safe because hooks run in background processes.
+    private func v2SurfaceSendTextWaitIdle(params: [String: Any]) -> V2CallResult {
+        guard v2ResolveTabManager(params: params) != nil else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let text = params["text"] as? String else {
+            return .err(code: "invalid_params", message: "Missing text", data: nil)
+        }
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+
+        let timeout = (params["timeout"] as? NSNumber)?.doubleValue ?? 120.0
+        let pollInterval: TimeInterval = 0.5
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+
+        // Poll until user stops typing or timeout
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            let typing = v2MainSync { isSurfaceTyping(surfaceId: surfaceId) }
+            if !typing { break }
+            Thread.sleep(forTimeInterval: pollInterval)
+        }
+
+        // Check one last time
+        let stillTyping = v2MainSync { isSurfaceTyping(surfaceId: surfaceId) }
+        if stillTyping {
+            return .err(code: "timeout", message: "User is still typing after \(Int(timeout))s", data: [
+                "surface_id": surfaceId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: surfaceId)
+            ])
+        }
+
+        // Delegate to the regular send
+        return v2SurfaceSendText(params: params)
+    }
+
     private func v2SurfaceSendText(params: [String: Any]) -> V2CallResult {
         guard let tabManager = v2ResolveTabManager(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
@@ -5936,8 +6035,9 @@ class TerminalController {
             resolvedWs = ws
             resolvedWindowId = v2ResolveWindowId(tabManager: tabManager)
 
-            // Split right from parent
-            if let nid = tabManager.newSplit(tabId: ws.id, surfaceId: parentSurfaceId, direction: .right) {
+            // Split right from parent. Default: no focus change.
+            let shouldFocus = (params["focus"] as? Bool) ?? false
+            if let nid = tabManager.newSplit(tabId: ws.id, surfaceId: parentSurfaceId, direction: .right, focus: shouldFocus) {
                 newSurfaceId = nid
             }
         }
@@ -6013,9 +6113,16 @@ class TerminalController {
             ])
         }
 
-        // Step 6: Send prompt if provided
+        // Step 6: Send prompt if provided (read file contents for prompt-file)
         if let promptFilePath {
-            sendSocketText("/oh-my-claudecode:skill prompt_file_path=\(promptFilePath)", surface: surface)
+            let fileURL = URL(fileURLWithPath: promptFilePath)
+            guard let fileContents = try? String(contentsOf: fileURL, encoding: .utf8), !fileContents.isEmpty else {
+                return .err(code: "file_error", message: "Failed to read prompt file: \(promptFilePath)", data: [
+                    "child_surface_id": childSurfaceId.uuidString,
+                    "child_surface_ref": v2Ref(kind: .surface, uuid: childSurfaceId)
+                ])
+            }
+            sendSocketText(fileContents, surface: surface)
             Thread.sleep(forTimeInterval: 1.0)
             sendSocketText("\n", surface: surface)
         } else if let prompt {
@@ -6032,7 +6139,7 @@ class TerminalController {
             // Use bundled CLI path for hook command (falls back to PATH cmux)
             let cliPath = Bundle.main.url(forResource: "cmux", withExtension: nil, subdirectory: "bin")?.path ?? "cmux"
             let msg = "Child child:\(childIndex) idle 전환됨. claude-children으로 상태를 점검하고 완료 여부를 판단하라."
-            let hookCommand = "\(cliPath) send --surface \(parentRef)\(wsFlag) \"\(msg)\" && sleep 1 && \(cliPath) send --surface \(parentRef)\(wsFlag) '\\n' && \(cliPath) notify --title 'Worker Idle' --body 'child:\(childIndex)'"
+            let hookCommand = "\(cliPath) send --wait-idle --surface \(parentRef)\(wsFlag) \"\(msg)\" && sleep 1 && \(cliPath) send --surface \(parentRef)\(wsFlag) '\\n' && \(cliPath) notify --title 'Worker Idle' --body 'child:\(childIndex)'"
             SurfaceHookManager.shared.setHook(
                 surfaceId: childSurfaceId,
                 event: .claudeIdle,

@@ -3548,7 +3548,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     fileprivate func recordTypingActivity() {
-        lastTypingActivityAt = ProcessInfo.processInfo.systemUptime
+        let now = ProcessInfo.processInfo.systemUptime
+        lastTypingActivityAt = now
+        // Also record per-surface typing activity for is-typing detection.
+        if let focusedId = tabManager?.selectedWorkspace?.focusedPanelId {
+            TerminalController.shared.recordSurfaceTypingActivity(surfaceId: focusedId, at: now)
+        }
     }
 
     nonisolated static func shouldWriteSessionSnapshotSynchronously(

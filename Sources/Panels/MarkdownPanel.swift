@@ -34,7 +34,9 @@ final class MarkdownPanel: Panel, ObservableObject {
     // nonisolated(unsafe) because deinit is not guaranteed to run on the
     // main actor, but DispatchSource.cancel() is thread-safe.
     private nonisolated(unsafe) var fileWatchSource: DispatchSourceFileSystemObject?
+    private nonisolated(unsafe) var dirWatchSource: DispatchSourceFileSystemObject?
     private var fileDescriptor: Int32 = -1
+    private var dirDescriptor: Int32 = -1
     private var isClosed: Bool = false
     private let watchQueue = DispatchQueue(label: "com.cmux.markdown-file-watch", qos: .utility)
 
@@ -73,6 +75,7 @@ final class MarkdownPanel: Panel, ObservableObject {
     func close() {
         isClosed = true
         stopFileWatcher()
+        stopDirectoryWatcher()
     }
 
     func triggerFlash() {
@@ -149,9 +152,14 @@ final class MarkdownPanel: Panel, ObservableObject {
 
     /// Retry reattaching the file watcher up to `maxReattachAttempts` times.
     /// Each attempt checks if the file has reappeared. Bails out early if
-    /// the panel has been closed.
+    /// the panel has been closed. After all attempts are exhausted, falls back
+    /// to watching the parent directory so that delete-then-recreate is caught.
     private func scheduleReattach(attempt: Int) {
-        guard attempt <= Self.maxReattachAttempts else { return }
+        guard attempt <= Self.maxReattachAttempts else {
+            // All file-level retries exhausted — fall back to parent directory watch.
+            startDirectoryWatcher()
+            return
+        }
         watchQueue.asyncAfter(deadline: .now() + Self.reattachDelay) { [weak self] in
             guard let self else { return }
             DispatchQueue.main.async {
@@ -167,6 +175,58 @@ final class MarkdownPanel: Panel, ObservableObject {
         }
     }
 
+    // MARK: - Parent directory watcher (fallback)
+
+    /// Watches the parent directory of `filePath` for changes. When the target
+    /// file reappears, the directory watcher is stopped and the normal file
+    /// watcher is restarted. This handles the case where a file is deleted and
+    /// later recreated with a new inode (beyond the initial reattach window).
+    private func startDirectoryWatcher() {
+        stopDirectoryWatcher()
+
+        let dirPath = (filePath as NSString).deletingLastPathComponent
+        let fd = open(dirPath, O_EVTONLY)
+        guard fd >= 0 else { return }
+        dirDescriptor = fd
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write],
+            queue: watchQueue
+        )
+
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                guard !self.isClosed else {
+                    self.stopDirectoryWatcher()
+                    return
+                }
+                if FileManager.default.fileExists(atPath: self.filePath) {
+                    self.stopDirectoryWatcher()
+                    self.isFileUnavailable = false
+                    self.loadFileContent()
+                    self.startFileWatcher()
+                }
+            }
+        }
+
+        source.setCancelHandler {
+            Darwin.close(fd)
+        }
+
+        source.resume()
+        dirWatchSource = source
+    }
+
+    private func stopDirectoryWatcher() {
+        if let source = dirWatchSource {
+            source.cancel()
+            dirWatchSource = nil
+        }
+        dirDescriptor = -1
+    }
+
     private func stopFileWatcher() {
         if let source = fileWatchSource {
             source.cancel()
@@ -179,5 +239,6 @@ final class MarkdownPanel: Panel, ObservableObject {
     deinit {
         // DispatchSource cancel is safe from any thread.
         fileWatchSource?.cancel()
+        dirWatchSource?.cancel()
     }
 }

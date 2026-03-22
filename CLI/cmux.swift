@@ -2161,7 +2161,8 @@ struct CMUXCLI {
             print("OK")
 
         case "claude-spawn":
-            let (csWsArg, csRem0) = parseOption(commandArgs, name: "--workspace")
+            let (csFocusArg, csRem_f) = parseBoolOption(commandArgs, name: "--focus")
+            let (csWsArg, csRem0) = parseOption(csRem_f, name: "--workspace")
             let (csCwdArg, csRem1) = parseOption(csRem0, name: "--cwd")
             let (csPromptArg, csRem2) = parseOption(csRem1, name: "--prompt")
             let (csPromptFileArg, csRem3) = parseOption(csRem2, name: "--prompt-file")
@@ -2176,6 +2177,7 @@ struct CMUXCLI {
             let csWsId = try normalizeWorkspaceHandle(csWorkspaceArg, client: client)
 
             var csParams: [String: Any] = ["parent_surface_id": csParentSurface]
+            if csFocusArg { csParams["focus"] = true }
             if let csWsId { csParams["workspace_id"] = csWsId }
             if let csCwdArg { csParams["cwd"] = resolvePath(csCwdArg) }
             if let csPromptArg { csParams["prompt"] = csPromptArg }
@@ -2392,7 +2394,8 @@ struct CMUXCLI {
             }
 
         case "send":
-            let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
+            let (waitIdleArg, rem_wi) = parseBoolOption(commandArgs, name: "--wait-idle")
+            let (wsArg, rem0) = parseOption(rem_wi, name: "--workspace")
             let (sfArg, rem1) = parseOption(rem0, name: "--surface")
             let workspaceArg = wsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
             let surfaceArg = sfArg ?? (wsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
@@ -2404,7 +2407,8 @@ struct CMUXCLI {
             if let wsId { params["workspace_id"] = wsId }
             let sfId = try normalizeSurfaceHandle(surfaceArg, client: client, workspaceHandle: wsId)
             if let sfId { params["surface_id"] = sfId }
-            let payload = try client.sendV2(method: "surface.send_text", params: params)
+            let method = waitIdleArg ? "surface.send_text_wait_idle" : "surface.send_text"
+            let payload = try client.sendV2(method: method, params: params)
             printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: v2OKSummary(payload, idFormat: idFormat))
 
         case "send-key":
@@ -2457,6 +2461,33 @@ struct CMUXCLI {
             if let sfId { params["surface_id"] = sfId }
             let payload = try client.sendV2(method: "surface.send_key", params: params)
             printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: v2OKSummary(payload, idFormat: idFormat))
+
+        case "is-typing":
+            let (itWsArg, itRem0) = parseOption(commandArgs, name: "--workspace")
+            let (itSfArg, _) = parseOption(itRem0, name: "--surface")
+            let itWorkspaceArg = itWsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let itSurfaceArg = itSfArg ?? (itWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            var itParams: [String: Any] = [:]
+            let itWsId = try normalizeWorkspaceHandle(itWorkspaceArg, client: client)
+            if let itWsId { itParams["workspace_id"] = itWsId }
+            guard let itSfId = try normalizeSurfaceHandle(itSurfaceArg, client: client, workspaceHandle: itWsId) else {
+                throw CLIError(message: "is-typing requires --surface or CMUX_SURFACE_ID")
+            }
+            itParams["surface_id"] = itSfId
+            let itPayload = try client.sendV2(method: "surface.is_typing", params: itParams)
+            if jsonOutput {
+                print(jsonString(itPayload))
+            } else {
+                let isTyping = itPayload["is_typing"] as? Bool ?? false
+                let idleSeconds = itPayload["idle_seconds"] as? Double
+                if isTyping {
+                    print("typing (idle \(String(format: "%.1f", idleSeconds ?? 0))s)")
+                } else {
+                    print("idle (idle \(String(format: "%.1f", idleSeconds ?? -1))s)")
+                }
+                // Exit code 0 = typing, 1 = idle (for shell scripting)
+                if !isTyping { Foundation.exit(1) }
+            }
 
         case "notify":
             let title = optionValue(commandArgs, name: "--title") ?? "Notification"
@@ -8499,6 +8530,20 @@ struct CMUXCLI {
             remaining.append(arg)
         }
         return (value, remaining)
+    }
+
+    /// Parse a boolean flag (no value). Returns (true, remaining) if flag is present.
+    private func parseBoolOption(_ args: [String], name: String) -> (Bool, [String]) {
+        var remaining: [String] = []
+        var found = false
+        for arg in args {
+            if arg == name && !found {
+                found = true
+            } else {
+                remaining.append(arg)
+            }
+        }
+        return (found, remaining)
     }
 
     private func parseRepeatedOption(_ args: [String], name: String) -> ([String], [String]) {
