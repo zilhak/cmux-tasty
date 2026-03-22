@@ -244,9 +244,6 @@ class TerminalController {
     /// Idle threshold for typing detection (seconds).
     private static let typingIdleThreshold: TimeInterval = 5.0
 
-    /// Pending messages queued while the target surface user is typing.
-    private var pendingSendQueue: [UUID: [(text: String, surface: ghostty_surface_t)]] = [:]
-
     private var v2BrowserFrameSelectorBySurface: [UUID: String] = [:]
     private var v2BrowserInitScriptsBySurface: [UUID: [String]] = [:]
     private var v2BrowserInitStylesBySurface: [UUID: [String]] = [:]
