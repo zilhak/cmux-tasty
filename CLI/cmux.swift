@@ -2312,6 +2312,60 @@ struct CMUXCLI {
                 print("OK killed \(killedRef)")
             }
 
+        case "claude-respawn":
+            let (crWsArg, crRem0) = parseOption(commandArgs, name: "--workspace")
+            let (crCwdArg, crRem1) = parseOption(crRem0, name: "--cwd")
+            let (crPromptArg, crRem2) = parseOption(crRem1, name: "--prompt")
+            let (crPromptFileArg, crRem3) = parseOption(crRem2, name: "--prompt-file")
+            let (crOnIdleArg, crRem4) = parseOption(crRem3, name: "--on-idle")
+            let (crSfArg, crRem5) = parseOption(crRem4, name: "--surface")
+
+            // Parse target: child:N or surface:<id>
+            guard let crTarget = crRem5.first(where: { !$0.hasPrefix("--") }) else {
+                throw CLIError(message: "claude-respawn requires a target (child:<N> or surface:<id>)")
+            }
+
+            let crWorkspaceArg = crWsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let crWsId = try normalizeWorkspaceHandle(crWorkspaceArg, client: client)
+
+            var crParams: [String: Any] = [:]
+            if let crWsId { crParams["workspace_id"] = crWsId }
+            if let crCwdArg { crParams["cwd"] = resolvePath(crCwdArg) }
+            if let crPromptArg { crParams["prompt"] = crPromptArg }
+            if let crPromptFileArg { crParams["prompt_file_path"] = resolvePath(crPromptFileArg) }
+            if let crOnIdleArg { crParams["on_idle"] = crOnIdleArg }
+
+            // Resolve parent surface
+            let crParentSurfaceArg = crSfArg ?? (crWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            if let crParentSfId = try normalizeSurfaceHandle(crParentSurfaceArg, client: client, workspaceHandle: crWsId) {
+                crParams["parent_surface_id"] = crParentSfId
+            }
+
+            let crLower = crTarget.lowercased()
+            if crLower.hasPrefix("child:") {
+                let idxStr = String(crTarget.dropFirst("child:".count))
+                guard let childIdx = Int(idxStr) else {
+                    throw CLIError(message: "Invalid child reference: \(crTarget) (expected child:<N>)")
+                }
+                crParams["child_index"] = childIdx
+            } else if crLower.hasPrefix("surface:") || isUUID(crTarget) {
+                let sfId = try normalizeSurfaceHandle(crTarget, client: client, workspaceHandle: crWsId)
+                if let sfId { crParams["child_surface_id"] = sfId }
+            } else {
+                throw CLIError(message: "Invalid target: \(crTarget) (expected child:<N> or surface:<id>)")
+            }
+
+            let crPayload = try client.sendV2(method: "claude.respawn", params: crParams)
+            if jsonOutput {
+                print(jsonString(crPayload))
+            } else {
+                let childRef = crPayload["child_ref"] as? String ?? "?"
+                let surfaceRef = crPayload["child_surface_ref"] as? String ?? "?"
+                let wsRef = crPayload["workspace_ref"] as? String ?? "?"
+                let oldRef = crPayload["respawned_from"] as? String ?? "?"
+                print("OK respawned \(childRef) \(surfaceRef) \(wsRef) (was \(oldRef))")
+            }
+
         case "surface-hook":
             let shSubcommand = commandArgs.first ?? ""
             let shArgs = commandArgs.dropFirst().map { $0 }
@@ -7401,6 +7455,33 @@ struct CMUXCLI {
               cmux claude-kill child:2 --surface surface:3
               cmux claude-kill child:1 --json
             """
+        case "claude-respawn":
+            return """
+            Usage: cmux claude-respawn <child:N | surface:id> [flags]
+
+            Respawn a crashed/exited Claude child with the same settings (cwd, index).
+            Closes the old child surface (if still alive), creates a new split from the
+            parent, launches Claude, and optionally sends a prompt.
+
+            Arguments:
+              <child:N | surface:id>  Child to respawn (child:1, surface:5, etc.)
+
+            Flags:
+              --surface <id|ref>     Parent surface (default: $CMUX_SURFACE_ID)
+              --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
+              --cwd <path>           Override working directory (default: reuse original)
+              --prompt <text>        Prompt to send after Claude restarts
+              --prompt-file <path>   File containing the prompt
+              --on-idle <action>     Action on idle: notify-parent | none (default: none)
+
+            Output (plain):
+              OK respawned child:1 surface:7 workspace:2 (was <old-surface-id>)
+
+            Example:
+              cmux claude-respawn child:1
+              cmux claude-respawn child:2 --prompt "continue the previous task"
+              cmux claude-respawn child:1 --on-idle notify-parent --json
+            """
         case "surface-hook":
             return """
             Usage: cmux surface-hook <set|list|unset> [flags]
@@ -11943,6 +12024,7 @@ struct CMUXCLI {
           read-since-mark [--workspace <id|ref>] [--surface <id|ref>] [--clear]
           claude-status [--workspace <id|ref>] [--lines <n>]
           claude-spawn [--workspace <ref>] [--cwd <path>] [--prompt <text>] [--prompt-file <path>] [--on-idle notify-parent|none]
+          claude-respawn <child:N | surface:id> [--cwd <path>] [--prompt <text>] [--prompt-file <path>] [--on-idle <action>]
           claude-children [--surface <ref>] [--workspace <ref>]
           claude-parent [--surface <ref>] [--workspace <ref>]
           claude-kill <child:N | surface:N> [--surface <ref>] [--workspace <ref>]
