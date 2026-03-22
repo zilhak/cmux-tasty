@@ -5145,6 +5145,9 @@ final class Workspace: Identifiable, ObservableObject {
         shellActivityState: PanelShellActivityState?,
         fallbackNeedsConfirmClose: Bool
     ) -> Bool {
+        if !CloseConfirmSettings.isEnabled() {
+            return false
+        }
         switch shellActivityState ?? .unknown {
         case .promptIdle:
             return false
