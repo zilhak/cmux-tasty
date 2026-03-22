@@ -9638,6 +9638,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return true
         }
 
+        // Surface group child navigation
+        if matchActionShortcut(event: event, action: .sgNextChild) {
+            if let workspace = tabManager?.selectedWorkspace {
+                workspace.focusNextSurfaceGroupChild()
+            }
+            return true
+        }
+        if matchActionShortcut(event: event, action: .sgPrevChild) {
+            if let workspace = tabManager?.selectedWorkspace {
+                workspace.focusPreviousSurfaceGroupChild()
+            }
+            return true
+        }
+
+        // Surface group split
+        if matchActionShortcut(event: event, action: .sgSplitRight) {
+            _ = performSurfaceGroupSplit(direction: .right)
+            return true
+        }
+        if matchActionShortcut(event: event, action: .sgSplitDown) {
+            _ = performSurfaceGroupSplit(direction: .down)
+            return true
+        }
+
         // Open browser: Cmd+Shift+L
         if matchActionShortcut(event: event, action: .openBrowser) {
             _ = openBrowserAndFocusAddressBar(insertAtEnd: true)
@@ -10331,6 +10355,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         recordGotoSplitSplitIfNeeded(direction: direction)
 #endif
         return didCreateSplit
+    }
+
+    /// Split the focused child within the current SurfaceGroup, adding a new terminal panel.
+    @discardableResult
+    func performSurfaceGroupSplit(direction: SplitDirection) -> Bool {
+        guard let workspace = tabManager?.selectedWorkspace,
+              let focusedPaneId = workspace.bonsplitController.focusedPaneId,
+              let selectedTab = workspace.bonsplitController.selectedTab(inPane: focusedPaneId) else {
+            return false
+        }
+        let orientation: SplitOrientation = (direction == .down || direction == .up) ? .vertical : .horizontal
+        return workspace.splitTabIntoSurfaceGroup(tabId: selectedTab.id, orientation: orientation)
     }
 
     @discardableResult

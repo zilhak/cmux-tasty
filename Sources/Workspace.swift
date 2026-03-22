@@ -5135,6 +5135,38 @@ final class Workspace: Identifiable, ObservableObject {
         return nil
     }
 
+    /// Focus the next child within the currently focused SurfaceGroup.
+    func focusNextSurfaceGroupChild() {
+        guard let group = focusedSurfaceGroup() else { return }
+        let children = group.allChildPanels
+        guard children.count > 1 else { return }
+        let currentIndex = children.firstIndex(where: { $0.id == group.focusedChildId }) ?? 0
+        let nextIndex = (currentIndex + 1) % children.count
+        group.focusChild(children[nextIndex].id)
+        children[nextIndex].focus()
+    }
+
+    /// Focus the previous child within the currently focused SurfaceGroup.
+    func focusPreviousSurfaceGroupChild() {
+        guard let group = focusedSurfaceGroup() else { return }
+        let children = group.allChildPanels
+        guard children.count > 1 else { return }
+        let currentIndex = children.firstIndex(where: { $0.id == group.focusedChildId }) ?? 0
+        let prevIndex = (currentIndex - 1 + children.count) % children.count
+        group.focusChild(children[prevIndex].id)
+        children[prevIndex].focus()
+    }
+
+    /// Returns the SurfaceGroup in the currently focused pane, if any.
+    private func focusedSurfaceGroup() -> SurfaceGroup? {
+        guard let focusedPaneId = bonsplitController.focusedPaneId,
+              let selectedTab = bonsplitController.selectedTab(inPane: focusedPaneId),
+              let panelId = panelIdFromSurfaceId(selectedTab.id) else {
+            return nil
+        }
+        return panels[panelId] as? SurfaceGroup
+    }
+
     enum PanelShellActivityState: String {
         case unknown
         case promptIdle
