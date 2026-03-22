@@ -5808,10 +5808,10 @@ class TerminalController {
                     .filter { !$0.isEmpty }
 
                 // Detect busy→idle transition for claude-idle hook.
-                // Claude Code shows ❯ prompt when idle. We only fire on the
-                // transition from busy (content was changing) to idle (stable with prompt).
-                let lastNonEmptyLine = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
-                let hasIdlePrompt = lastNonEmptyLine?.contains("❯") == true
+                // Claude Code shows ❯ prompt when idle. The prompt may not be the last line
+                // because Claude Code TUI renders separator lines (───) below it.
+                // So we check if ANY of the last lines contains ❯, not just the last non-empty line.
+                let hasIdlePrompt = lines.contains(where: { $0.contains("❯") })
                 if secondsSinceChange == 0 {
                     // Content just changed — mark as busy
                     surfaceClaudeBusy.insert(panelId)
@@ -5986,6 +5986,9 @@ class TerminalController {
                 event: .claudeIdle,
                 command: hookCommand
             )
+            // Mark child as busy immediately so busy→idle transition can be detected
+            // even if the task completes before the first timer tick
+            surfaceClaudeBusy.insert(childSurfaceId)
             // Start the idle check timer so we can detect when this child becomes idle
             startClaudeIdleCheckTimerIfNeeded()
         }
@@ -16060,7 +16063,8 @@ class TerminalController {
     }
 
     /// Check all surfaces that have claude-idle hooks for busy→idle transitions.
-    /// Triggers v2WorkspaceClaudeActivity on relevant workspaces, which contains the idle detection logic.
+    /// Uses read-screen to check the status bar for "esc to interrupt" (busy indicator).
+    /// When "esc to interrupt" disappears but "bypass permissions" remains, it's idle.
     private func checkClaudeIdleSurfaces() {
         let surfaceIds = SurfaceHookManager.shared.surfacesWithHooks(for: .claudeIdle)
         guard !surfaceIds.isEmpty else {
@@ -16069,10 +16073,41 @@ class TerminalController {
         }
 
         guard let tabManager = self.tabManager else { return }
-        // Trigger claude_activity on all workspaces — the idle detection inside will
-        // fire hooks for any surfaces that transitioned from busy to idle.
-        for ws in tabManager.tabs {
-            _ = self.v2WorkspaceClaudeActivity(params: ["workspace_id": ws.id.uuidString])
+
+        for surfaceId in surfaceIds {
+            // Find the terminal panel for this surface across all workspaces
+            var terminalPanel: TerminalPanel?
+            var workspace: Workspace?
+            for ws in tabManager.tabs {
+                if let panel = ws.terminalPanel(for: surfaceId) {
+                    terminalPanel = panel
+                    workspace = ws
+                    break
+                }
+            }
+            guard let panel = terminalPanel, workspace != nil else { continue }
+
+            // Read last 2 lines of screen to check status bar
+            let response = readTerminalTextBase64(
+                terminalPanel: panel,
+                includeScrollback: true,
+                lineLimit: 3
+            )
+            guard response.hasPrefix("OK ") else { continue }
+            let base64 = String(response.dropFirst(3))
+            guard let data = Data(base64Encoded: base64),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+
+            let isBusy = text.contains("esc to interrupt")
+            let isClaudeIdle = text.contains("bypass permissions") && !isBusy
+
+            if isBusy {
+                surfaceClaudeBusy.insert(surfaceId)
+            } else if isClaudeIdle && surfaceClaudeBusy.contains(surfaceId) {
+                // Transition from busy to idle — fire hook
+                surfaceClaudeBusy.remove(surfaceId)
+                SurfaceHookManager.shared.fire(event: .claudeIdle, surfaceId: surfaceId)
+            }
         }
     }
 
