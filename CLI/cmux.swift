@@ -2397,12 +2397,22 @@ struct CMUXCLI {
             let (waitIdleArg, rem_wi) = parseBoolOption(commandArgs, name: "--wait-idle")
             let (wsArg, rem0) = parseOption(rem_wi, name: "--workspace")
             let (sfArg, rem1) = parseOption(rem0, name: "--surface")
+            let (fileArg, rem2) = parseOption(rem1, name: "--file")
+            let (hasBracketPaste, rem3) = parseBoolOption(rem2, name: "--bracket-paste")
             let workspaceArg = wsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
             let surfaceArg = sfArg ?? (wsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
-            let rawText = rem1.dropFirst(rem1.first == "--" ? 1 : 0).joined(separator: " ")
-            guard !rawText.isEmpty else { throw CLIError(message: "send requires text") }
-            let text = unescapeSendText(rawText)
-            var params: [String: Any] = ["text": text]
+            var params: [String: Any] = [:]
+            if let fileArg {
+                params["file"] = fileArg
+                // --file implies bracket paste unless explicitly disabled
+                params["bracket_paste"] = true
+            } else {
+                let rawText = rem3.dropFirst(rem3.first == "--" ? 1 : 0).joined(separator: " ")
+                guard !rawText.isEmpty else { throw CLIError(message: "send requires text or --file") }
+                let text = unescapeSendText(rawText)
+                params["text"] = text
+            }
+            if hasBracketPaste { params["bracket_paste"] = true }
             let wsId = try normalizeWorkspaceHandle(workspaceArg, client: client)
             if let wsId { params["workspace_id"] = wsId }
             let sfId = try normalizeSurfaceHandle(surfaceArg, client: client, workspaceHandle: wsId)
@@ -7426,10 +7436,15 @@ struct CMUXCLI {
             Flags:
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
               --surface <id|ref>     Target surface (default: $CMUX_SURFACE_ID)
+              --file <path>          Send file contents as pasted text (implies --bracket-paste)
+              --bracket-paste        Wrap text in bracket paste sequences (\\e[200~ / \\e[201~)
+                                     so multiline text is treated as a single paste, not line-by-line
 
             Example:
               cmux send "echo hello"
               cmux send --surface surface:2 "ls -la\\n"
+              cmux send --file /tmp/script.sh
+              cmux send --bracket-paste "line1\\nline2\\nline3"
             """
         case "send-key":
             return """
