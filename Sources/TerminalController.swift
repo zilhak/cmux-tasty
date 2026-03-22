@@ -190,7 +190,15 @@ class TerminalController {
 
     private var v2BrowserNextElementOrdinal: Int = 1
     private var v2BrowserElementRefs: [String: V2BrowserElementRefEntry] = [:]
-    private var surfaceReadMarks: [UUID: String] = [:]
+    private struct ReadMark {
+        let text: String
+        let lineCount: Int
+        /// Hash of the last N lines at mark time for overflow validation.
+        let tailHash: Int
+        /// Number of tail lines used for the hash.
+        static let tailLineCount = 50
+    }
+    private var surfaceReadMarks: [UUID: ReadMark] = [:]
 
     // MARK: - Claude Activity Tracking
     private struct SurfaceActivitySnapshot {
@@ -5506,9 +5514,22 @@ class TerminalController {
         guard let tabManager = v2ResolveTabManager(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
         }
-        guard let text = params["text"] as? String else {
-            return .err(code: "invalid_params", message: "Missing text", data: nil)
+
+        // Support --file: read text from file path
+        let text: String
+        if let filePath = params["file"] as? String {
+            guard let fileData = FileManager.default.contents(atPath: filePath),
+                  let fileText = String(data: fileData, encoding: .utf8) else {
+                return .err(code: "invalid_params", message: "Cannot read file: \(filePath)", data: nil)
+            }
+            text = fileText
+        } else if let t = params["text"] as? String {
+            text = t
+        } else {
+            return .err(code: "invalid_params", message: "Missing text or file", data: nil)
         }
+
+        let bracketPaste = (params["bracket_paste"] as? Bool) ?? false
 
         var result: V2CallResult = .err(code: "internal_error", message: "Failed to send text", data: nil)
         v2MainSync {
@@ -5530,7 +5551,14 @@ class TerminalController {
             #endif
             let queued: Bool
             if let surface = terminalPanel.surface.surface {
-                sendSocketText(text, surface: surface)
+                if bracketPaste {
+                    // Wrap in bracket paste mode so the terminal treats newlines as literal paste
+                    sendTextEvent(surface: surface, text: "\u{1b}[200~")
+                    sendTextEvent(surface: surface, text: text)
+                    sendTextEvent(surface: surface, text: "\u{1b}[201~")
+                } else {
+                    sendSocketText(text, surface: surface)
+                }
                 // Ensure we present a new frame after injecting input so snapshot-based tests (and
                 // socket-driven agents) can observe the updated terminal without requiring a focus
                 // change to trigger a draw.
@@ -5538,7 +5566,11 @@ class TerminalController {
                 queued = false
             } else {
                 // Avoid blocking the main actor waiting for view/surface attachment.
-                terminalPanel.sendText(text)
+                if bracketPaste {
+                    terminalPanel.sendText("\u{1b}[200~" + text + "\u{1b}[201~")
+                } else {
+                    terminalPanel.sendText(text)
+                }
                 terminalPanel.surface.requestBackgroundSurfaceStartIfNeeded()
                 queued = true
             }
@@ -5724,7 +5756,14 @@ class TerminalController {
             }
             let base64 = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
             let snapshot = Data(base64Encoded: base64).flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            surfaceReadMarks[surfaceId] = snapshot
+            let lines = snapshot.components(separatedBy: "\n")
+            let tailLines = lines.suffix(ReadMark.tailLineCount)
+            let tailHash = tailLines.joined(separator: "\n").hashValue
+            surfaceReadMarks[surfaceId] = ReadMark(
+                text: snapshot,
+                lineCount: lines.count,
+                tailHash: tailHash
+            )
 
             let windowId = v2ResolveWindowId(tabManager: tabManager)
             result = .ok([
@@ -5771,16 +5810,51 @@ class TerminalController {
             let base64 = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
             let current = Data(base64Encoded: base64).flatMap { String(data: $0, encoding: .utf8) } ?? ""
 
-            let marked = surfaceReadMarks[surfaceId]
+            let mark = surfaceReadMarks[surfaceId]
             let newText: String
-            if let marked {
-                if current.hasPrefix(marked) {
-                    var suffix = String(current.dropFirst(marked.count))
+            var overflow = false
+            if let mark {
+                if current.hasPrefix(mark.text) {
+                    // Prefix match — exact delta
+                    var suffix = String(current.dropFirst(mark.text.count))
                     if suffix.hasPrefix("\n") { suffix = String(suffix.dropFirst()) }
                     newText = suffix
                 } else {
-                    // Terminal was reset/reflowed — return full text
-                    newText = current
+                    // Prefix mismatch — likely scrollback overflow.
+                    // Use the mark's tail hash to locate the mark boundary in current text.
+                    let currentLines = current.components(separatedBy: "\n")
+                    let tailLen = ReadMark.tailLineCount
+                    var foundEndIdx: Int? = nil
+
+                    func checkTailAt(endIdx: Int) -> Bool {
+                        guard endIdx >= tailLen, endIdx <= currentLines.count else { return false }
+                        let window = currentLines[(endIdx - tailLen)..<endIdx]
+                        return window.joined(separator: "\n").hashValue == mark.tailHash
+                    }
+
+                    if currentLines.count >= tailLen {
+                        // Fast path: check the original mark position first
+                        if checkTailAt(endIdx: mark.lineCount) {
+                            foundEndIdx = mark.lineCount
+                        } else {
+                            // Slow path: linear scan for the tail anchor
+                            for endIdx in stride(from: tailLen, through: currentLines.count, by: 1) {
+                                if endIdx == mark.lineCount { continue }
+                                if checkTailAt(endIdx: endIdx) {
+                                    foundEndIdx = endIdx
+                                    break
+                                }
+                            }
+                        }
+                    }
+
+                    if let foundEndIdx {
+                        let delta = Array(currentLines.suffix(from: foundEndIdx))
+                        newText = delta.joined(separator: "\n")
+                    } else {
+                        overflow = true
+                        newText = current
+                    }
                 }
             } else {
                 newText = current
@@ -5792,17 +5866,21 @@ class TerminalController {
 
             let newBase64 = newText.data(using: .utf8)?.base64EncodedString() ?? ""
             let windowId = v2ResolveWindowId(tabManager: tabManager)
-            result = .ok([
+            var payload: [String: Any] = [
                 "text": newText,
                 "base64": newBase64,
-                "has_mark": marked != nil,
+                "has_mark": mark != nil,
                 "workspace_id": ws.id.uuidString,
                 "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
                 "surface_id": surfaceId.uuidString,
                 "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
                 "window_id": v2OrNull(windowId?.uuidString),
                 "window_ref": v2Ref(kind: .window, uuid: windowId)
-            ])
+            ]
+            if overflow {
+                payload["overflow"] = true
+            }
+            result = .ok(payload)
         }
         return result
     }
