@@ -44,6 +44,10 @@ enum KeyboardShortcutSettings {
 
         // Surface groups
         case createSurfaceGroup
+        case sgNextChild
+        case sgPrevChild
+        case sgSplitRight
+        case sgSplitDown
 
         // Panels
         case openBrowser
@@ -84,6 +88,10 @@ enum KeyboardShortcutSettings {
             case .splitBrowserRight: return String(localized: "shortcut.splitBrowserRight.label", defaultValue: "Split Browser Right")
             case .splitBrowserDown: return String(localized: "shortcut.splitBrowserDown.label", defaultValue: "Split Browser Down")
             case .createSurfaceGroup: return String(localized: "shortcut.createSurfaceGroup.label", defaultValue: "New Surface Group")
+            case .sgNextChild: return String(localized: "shortcut.sgNextChild.label", defaultValue: "Next Child in Group")
+            case .sgPrevChild: return String(localized: "shortcut.sgPrevChild.label", defaultValue: "Previous Child in Group")
+            case .sgSplitRight: return String(localized: "shortcut.sgSplitRight.label", defaultValue: "Split Right in Group")
+            case .sgSplitDown: return String(localized: "shortcut.sgSplitDown.label", defaultValue: "Split Down in Group")
             case .openBrowser: return String(localized: "shortcut.openBrowser.label", defaultValue: "Open Browser")
             case .toggleBrowserDeveloperTools: return String(localized: "shortcut.toggleBrowserDevTools.label", defaultValue: "Toggle Browser Developer Tools")
             case .showBrowserJavaScriptConsole: return String(localized: "shortcut.showBrowserJSConsole.label", defaultValue: "Show Browser JavaScript Console")
@@ -160,6 +168,14 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "m", command: true, shift: true, option: false, control: false)
             case .createSurfaceGroup:
                 return StoredShortcut(key: "g", command: true, shift: true, option: false, control: false)
+            case .sgNextChild:
+                return StoredShortcut(key: "]", command: true, shift: false, option: true, control: true)
+            case .sgPrevChild:
+                return StoredShortcut(key: "[", command: true, shift: false, option: true, control: true)
+            case .sgSplitRight:
+                return StoredShortcut(key: "d", command: true, shift: false, option: false, control: true)
+            case .sgSplitDown:
+                return StoredShortcut(key: "d", command: true, shift: true, option: false, control: true)
             case .openBrowser:
                 return StoredShortcut(key: "l", command: true, shift: true, option: false, control: false)
             case .toggleBrowserDeveloperTools:
