@@ -33,8 +33,38 @@ final class SurfaceHookManager {
         }
     }
 
+    /// A log entry recording hook execution result.
+    struct HookLogEntry {
+        let date: Date
+        let surfaceId: UUID
+        let event: Event
+        let hookId: UUID
+        let command: String
+        let exitCode: Int32
+        let stderr: String?
+
+        func toDictionary() -> [String: Any] {
+            var dict: [String: Any] = [
+                "date": ISO8601DateFormatter().string(from: date),
+                "surface_id": surfaceId.uuidString,
+                "event": event.rawValue,
+                "hook_id": hookId.uuidString,
+                "command": command,
+                "exit_code": exitCode,
+            ]
+            if let stderr, !stderr.isEmpty {
+                dict["stderr"] = stderr
+            }
+            return dict
+        }
+    }
+
     /// surfaceId -> event -> [Hook]
     private var hooks: [UUID: [Event: [Hook]]] = [:]
+
+    /// Recent hook execution logs (capped at ``maxLogEntries``).
+    private(set) var executionLogs: [HookLogEntry] = []
+    private let maxLogEntries = 100
 
     private init() {}
 
@@ -89,10 +119,18 @@ final class SurfaceHookManager {
         hooks.removeValue(forKey: surfaceId)
     }
 
+    // MARK: - Log queries
+
+    /// Return execution logs, optionally filtered by surface.
+    func logs(surfaceId: UUID? = nil) -> [HookLogEntry] {
+        guard let surfaceId else { return executionLogs }
+        return executionLogs.filter { $0.surfaceId == surfaceId }
+    }
+
     // MARK: - Firing
 
     /// Fire all hooks registered for the given event on a surface.
-    /// Hooks run asynchronously in background processes and do not block the caller.
+    /// Hooks run asynchronously in background processes; execution results are logged.
     func fire(event: Event, surfaceId: UUID, environment: [String: String] = [:]) {
         guard let eventHooks = hooks[surfaceId]?[event], !eventHooks.isEmpty else { return }
 
@@ -102,16 +140,16 @@ final class SurfaceHookManager {
 
         for hook in eventHooks {
             env["CMUX_HOOK_ID"] = hook.id.uuidString
-            executeHookCommand(hook.command, environment: env)
+            executeHookCommand(hook, surfaceId: surfaceId, event: event, environment: env)
         }
     }
 
     // MARK: - Private
 
-    private func executeHookCommand(_ command: String, environment: [String: String]) {
+    private func executeHookCommand(_ hook: Hook, surfaceId: UUID, event: Event, environment: [String: String]) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", command]
+        process.arguments = ["-c", hook.command]
 
         var processEnv = ProcessInfo.processInfo.environment
         for (key, value) in environment {
@@ -119,9 +157,13 @@ final class SurfaceHookManager {
         }
         process.environment = processEnv
 
-        // Detach stdout/stderr so the hook doesn't inherit the app's file descriptors
+        // Capture stdout to /dev/null but capture stderr for logging
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
+
+        let hookId = hook.id
+        let command = hook.command
 
         do {
             try process.run()
@@ -129,6 +171,36 @@ final class SurfaceHookManager {
 #if DEBUG
             NSLog("[SurfaceHookManager] Failed to execute hook command: \(error.localizedDescription)")
 #endif
+            appendLog(HookLogEntry(
+                date: Date(), surfaceId: surfaceId, event: event,
+                hookId: hookId, command: command, exitCode: -1,
+                stderr: error.localizedDescription
+            ))
+            return
+        }
+
+        // Wait for completion in background, then log the result on main actor.
+        let capturedProcess = process
+        let capturedStderrPipe = stderrPipe
+        Task.detached { [weak self] in
+            capturedProcess.waitUntilExit()
+            let exitCode = capturedProcess.terminationStatus
+            let stderrData = capturedStderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrStr = String(data: stderrData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let entry = HookLogEntry(
+                date: Date(), surfaceId: surfaceId, event: event,
+                hookId: hookId, command: command, exitCode: exitCode,
+                stderr: stderrStr
+            )
+            await self?.appendLog(entry)
+        }
+    }
+
+    private func appendLog(_ entry: HookLogEntry) {
+        executionLogs.append(entry)
+        if executionLogs.count > maxLogEntries {
+            executionLogs.removeFirst(executionLogs.count - maxLogEntries)
         }
     }
 }

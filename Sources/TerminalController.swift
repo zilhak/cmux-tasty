@@ -2471,6 +2471,8 @@ class TerminalController {
             return v2Result(id: id, self.v2SurfaceUnsetHook(params: params))
         case "surface.fire_hook":
             return v2Result(id: id, self.v2SurfaceFireHook(params: params))
+        case "surface.hook_logs":
+            return v2Result(id: id, self.v2SurfaceHookLogs(params: params))
 
         case "workspace.claude_activity":
             return v2Result(id: id, self.v2WorkspaceClaudeActivity(params: params))
@@ -6024,19 +6026,30 @@ class TerminalController {
             sendSocketText("\n", surface: surface)
         }
 
-        // Step 7: Register claude-idle hook if on_idle == "notify-parent"
+        // Step 7: Register hooks if on_idle == "notify-parent"
         if onIdle == "notify-parent" {
             let parentRef = v2MainSync { v2Ref(kind: .surface, uuid: parentSurfaceId) } as? String ?? parentSurfaceId.uuidString
             let wsRef = v2MainSync { resolvedWs.map { v2Ref(kind: .workspace, uuid: $0.id) } as? String } ?? ""
             let wsFlag = wsRef.isEmpty ? "" : " --workspace \(wsRef)"
             // Use bundled CLI path for hook command (falls back to PATH cmux)
             let cliPath = Bundle.main.url(forResource: "cmux", withExtension: nil, subdirectory: "bin")?.path ?? "cmux"
-            let msg = "Child child:\(childIndex) idle 전환됨. claude-children으로 상태를 점검하고 완료 여부를 판단하라."
-            let hookCommand = "\(cliPath) send --surface \(parentRef)\(wsFlag) \"\(msg)\" && sleep 1 && \(cliPath) send --surface \(parentRef)\(wsFlag) '\\n' && \(cliPath) notify --title 'Worker Idle' --body 'child:\(childIndex)'"
+
+            // 7a: claude-idle hook
+            let idleMsg = "Child child:\(childIndex) idle 전환됨. claude-children으로 상태를 점검하고 완료 여부를 판단하라."
+            let idleHookCommand = "\(cliPath) send --surface \(parentRef)\(wsFlag) \"\(idleMsg)\" && sleep 1 && \(cliPath) send --surface \(parentRef)\(wsFlag) '\\n' && \(cliPath) notify --title 'Worker Idle' --body 'child:\(childIndex)'"
             SurfaceHookManager.shared.setHook(
                 surfaceId: childSurfaceId,
                 event: .claudeIdle,
-                command: hookCommand
+                command: idleHookCommand
+            )
+
+            // 7b: process-exit hook — notify parent when child process terminates
+            let exitMsg = "Child child:\(childIndex) 종료됨(exit). claude-children으로 상태를 점검하라."
+            let exitHookCommand = "\(cliPath) send --surface \(parentRef)\(wsFlag) --wait-idle \"\(exitMsg)\" && sleep 1 && \(cliPath) send --surface \(parentRef)\(wsFlag) '\\n' && \(cliPath) notify --title 'Worker Exit' --body 'child:\(childIndex)'"
+            SurfaceHookManager.shared.setHook(
+                surfaceId: childSurfaceId,
+                event: .processExit,
+                command: exitHookCommand
             )
         }
 
@@ -16132,9 +16145,22 @@ class TerminalController {
         var result: V2CallResult = .err(code: "internal_error", message: "Unexpected error", data: nil)
         v2MainSync {
             let hooks = SurfaceHookManager.shared.listHooks(surfaceId: surfaceId, event: eventFilter)
+            let allLogs = SurfaceHookManager.shared.executionLogs
+            let hookDicts: [[String: Any]] = hooks.map { hook in
+                var dict = hook.toDictionary()
+                // Attach last execution result if available
+                if let lastLog = allLogs.last(where: { $0.hookId == hook.id }) {
+                    dict["last_execution"] = [
+                        "date": ISO8601DateFormatter().string(from: lastLog.date),
+                        "exit_code": lastLog.exitCode,
+                        "stderr": lastLog.stderr ?? "",
+                    ]
+                }
+                return dict
+            }
             result = .ok([
                 "surface_id": surfaceId.uuidString,
-                "hooks": hooks.map { $0.toDictionary() },
+                "hooks": hookDicts,
             ])
         }
         return result
@@ -16174,6 +16200,20 @@ class TerminalController {
         v2MainSync {
             SurfaceHookManager.shared.fire(event: event, surfaceId: surfaceId)
             result = .ok(["fired": true, "surface_id": surfaceId.uuidString, "event": event.rawValue])
+        }
+        return result
+    }
+
+    private func v2SurfaceHookLogs(params: [String: Any]) -> V2CallResult {
+        let surfaceId = v2UUID(params, "surface_id")
+
+        var result: V2CallResult = .err(code: "internal_error", message: "Unexpected error", data: nil)
+        v2MainSync {
+            let logs = SurfaceHookManager.shared.logs(surfaceId: surfaceId)
+            result = .ok([
+                "logs": logs.map { $0.toDictionary() },
+                "count": logs.count,
+            ])
         }
         return result
     }
