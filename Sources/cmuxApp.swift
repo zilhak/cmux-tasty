@@ -3746,6 +3746,18 @@ enum QuitWarningSettings {
     }
 }
 
+enum CloseConfirmSettings {
+    static let confirmCloseRunningProcessKey = "confirmCloseRunningProcess"
+    static let defaultConfirmCloseRunningProcess = true
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        if defaults.object(forKey: confirmCloseRunningProcessKey) == nil {
+            return defaultConfirmCloseRunningProcess
+        }
+        return defaults.bool(forKey: confirmCloseRunningProcessKey)
+    }
+}
+
 enum CommandPaletteRenameSelectionSettings {
     static let selectAllOnFocusKey = "commandPalette.renameSelectAllOnFocus"
     static let defaultSelectAllOnFocus = true
@@ -3840,6 +3852,7 @@ struct SettingsView: View {
     @AppStorage(NotificationPaneFlashSettings.enabledKey) private var notificationPaneFlashEnabled = NotificationPaneFlashSettings.defaultEnabled
     @AppStorage(MenuBarExtraSettings.showInMenuBarKey) private var showMenuBarExtra = MenuBarExtraSettings.defaultShowInMenuBar
     @AppStorage(QuitWarningSettings.warnBeforeQuitKey) private var warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
+    @AppStorage(CloseConfirmSettings.confirmCloseRunningProcessKey) private var confirmCloseRunningProcess = CloseConfirmSettings.defaultConfirmCloseRunningProcess
     @AppStorage(CommandPaletteRenameSelectionSettings.selectAllOnFocusKey)
     private var commandPaletteRenameSelectAllOnFocus = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
     @AppStorage(CommandPaletteSwitcherSearchSettings.searchAllSurfacesKey)
@@ -5587,6 +5600,7 @@ struct SettingsView: View {
         notificationPaneFlashEnabled = NotificationPaneFlashSettings.defaultEnabled
         showMenuBarExtra = MenuBarExtraSettings.defaultShowInMenuBar
         warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
+        confirmCloseRunningProcess = CloseConfirmSettings.defaultConfirmCloseRunningProcess
         commandPaletteRenameSelectAllOnFocus = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
         commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
         ShortcutHintDebugSettings.resetVisibilityDefaults()

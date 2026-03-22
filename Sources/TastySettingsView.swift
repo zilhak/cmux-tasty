@@ -94,6 +94,7 @@ struct TastyGeneralSettingsSection: View {
     @AppStorage(PaneFirstClickFocusSettings.enabledKey)
     private var paneFirstClickFocusEnabled = PaneFirstClickFocusSettings.defaultEnabled
     @AppStorage(QuitWarningSettings.warnBeforeQuitKey) private var warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
+    @AppStorage(CloseConfirmSettings.confirmCloseRunningProcessKey) private var confirmCloseRunningProcess = CloseConfirmSettings.defaultConfirmCloseRunningProcess
     @AppStorage(CommandPaletteRenameSelectionSettings.selectAllOnFocusKey)
     private var commandPaletteRenameSelectAllOnFocus = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
     @AppStorage(CommandPaletteSwitcherSearchSettings.searchAllSurfacesKey)
@@ -226,6 +227,19 @@ struct TastyGeneralSettingsSection: View {
                     : String(localized: "settings.app.warnBeforeQuit.subtitleOff", defaultValue: "Cmd+Q quits immediately without confirmation.")
             ) {
                 Toggle("", isOn: $warnBeforeQuitShortcut)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
+
+            SettingsCardDivider()
+
+            SettingsCardRow(
+                String(localized: "settings.app.confirmCloseRunningProcess", defaultValue: "Confirm Close Running Process"),
+                subtitle: confirmCloseRunningProcess
+                    ? String(localized: "settings.app.confirmCloseRunningProcess.subtitleOn", defaultValue: "Show a confirmation when closing a terminal with a running process.")
+                    : String(localized: "settings.app.confirmCloseRunningProcess.subtitleOff", defaultValue: "Close terminals immediately without confirmation, even with running processes.")
+            ) {
+                Toggle("", isOn: $confirmCloseRunningProcess)
                     .labelsHidden()
                     .controlSize(.small)
             }
