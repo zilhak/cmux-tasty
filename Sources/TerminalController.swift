@@ -1240,6 +1240,11 @@ class TerminalController {
     }
 
     nonisolated func stop() {
+        // Kill all Claude processes spawned via cmux hooks before closing the socket.
+        // Without this, child Claude processes become orphans consuming 100% CPU
+        // when the app terminates (especially on crash).
+        killCmuxClaudeProcesses()
+
         let (socketToClose, socketPathToUnlink) = withListenerState {
             isRunning = false
             acceptLoopAlive = false
@@ -1256,6 +1261,31 @@ class TerminalController {
             close(socketToClose)
         }
         unlink(socketPathToUnlink)
+    }
+
+    /// Find and SIGTERM all Claude processes that were spawned with cmux hooks.
+    /// These are identified by having "cmux claude-hook" in their command line.
+    private nonisolated func killCmuxClaudeProcesses() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        task.arguments = ["-f", "claude.*cmux claude-hook"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        do {
+            try task.run()
+            task.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                let pids = output.split(separator: "\n")
+                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+                for pid in pids {
+                    kill(pid, SIGTERM)
+                }
+            }
+        } catch {
+            // Best-effort cleanup — don't block termination on failure.
+        }
     }
 
     private nonisolated func unlinkSocketPathIfListenerStillInactive(_ path: String) {

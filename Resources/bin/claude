@@ -88,6 +88,21 @@ export CMUX_CLAUDE_PID=$$
 # - PreToolUse: clears "Needs input" when Claude resumes after permission grant (async to avoid latency)
 HOOKS_JSON='{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"cmux claude-hook session-start","timeout":10}]}],"Stop":[{"matcher":"","hooks":[{"type":"command","command":"cmux claude-hook stop","timeout":10}]}],"SessionEnd":[{"matcher":"","hooks":[{"type":"command","command":"cmux claude-hook session-end","timeout":1}]}],"Notification":[{"matcher":"","hooks":[{"type":"command","command":"cmux claude-hook notification","timeout":10}]}],"UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"cmux claude-hook prompt-submit","timeout":10}]}],"PreToolUse":[{"matcher":"","hooks":[{"type":"command","command":"cmux claude-hook pre-tool-use","timeout":5,"async":true}]}]}}'
 
+# Watchdog: if the cmux app dies (crash/force-quit), the socket file disappears.
+# This background loop detects that and kills the claude process to prevent
+# orphaned processes spinning at 100% CPU.
+_CMUX_SOCKET="${CMUX_SOCKET_PATH:-}"
+if [[ -n "$_CMUX_SOCKET" ]]; then
+    (
+        while sleep 10; do
+            [[ -S "$_CMUX_SOCKET" ]] || { kill $$ 2>/dev/null; exit 0; }
+        done
+    ) &
+    _CMUX_WATCHDOG_PID=$!
+    # Clean up watchdog when this script (which becomes claude via exec) exits.
+    trap 'kill $_CMUX_WATCHDOG_PID 2>/dev/null' EXIT
+fi
+
 if [[ "$SKIP_SESSION_ID" == true ]]; then
     exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"
 else
