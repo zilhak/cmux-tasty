@@ -6314,6 +6314,18 @@ class TerminalController {
                 newSurfaceId = nid
                 // Equalize all splits so children get equal space
                 tabManager.equalizeSplits(tabId: ws.id)
+            } else {
+                // Fallback: split failed (e.g. markdown-only workspace).
+                // Force split from focused panel regardless of type.
+                let fallbackTarget = ws.focusedPanelId ?? ws.panels.keys.first
+                if let target = fallbackTarget {
+                    newSurfaceId = ws.newTerminalSplit(
+                        from: target,
+                        orientation: .horizontal,
+                        insertFirst: false,
+                        focus: shouldFocus
+                    )?.id
+                }
             }
         }
 

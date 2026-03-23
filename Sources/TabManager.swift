@@ -5112,6 +5112,16 @@ extension TabManager {
     }
 
     func restoreSessionSnapshot(_ snapshot: SessionTabManagerSnapshot) {
+        // Close all panels in old workspaces before replacing them.
+        // This detaches portal-hosted terminal NSViews from the window.
+        // Without this, dismantleNSView intentionally skips portal detach
+        // (to handle transient SwiftUI rebuilds), leaving stale terminal
+        // views visible in the window after session restore.
+        for tab in tabs {
+            for panel in tab.panels.values {
+                panel.close()
+            }
+        }
         for tab in tabs {
             unwireClosedBrowserTracking(for: tab)
         }

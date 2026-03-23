@@ -9,11 +9,25 @@
 
 ## 빌드 및 실행
 
-코드 수정 후 **큰 변경이 완료되면** 반드시 Debug 빌드를 수행하여 사용자가 app 목록에서 직접 실행할 수 있도록 합니다:
+코드 수정 후 **큰 변경이 완료되면** 반드시 Debug 빌드를 수행하여 사용자가 app 목록에서 직접 실행할 수 있도록 합니다.
 
+**⚠️ 빌드 전에 해당 타입의 기존 빌드 산출물을 정리해야 합니다.** 여러 경로에 앱이 남아 있으면 Spotlight/Launchpad에 중복 표시되어 어떤 것이 최신인지 알 수 없습니다.
+
+**Debug 빌드:**
 ```bash
+find ~/Library/Developer/Xcode/DerivedData -name "cmux-tasty DEV.app" -exec rm -rf {} + 2>/dev/null
 xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Debug -destination 'platform=macOS' build
 ```
+
+**Release 빌드:**
+```bash
+find ~/Library/Developer/Xcode/DerivedData -name "cmux-tasty.app" -exec rm -rf {} + 2>/dev/null
+rm -rf /Applications/cmux-tasty.app 2>/dev/null
+rm -rf build/Build/Products/Release/cmux-tasty.app 2>/dev/null
+xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Release -destination 'platform=macOS' build
+```
+
+Release는 DerivedData 외에 `/Applications/`과 프로젝트 내 `build/` 디렉토리에도 남아 있을 수 있으므로 3곳 모두 정리한다.
 
 빌드 산출물은 Xcode 기본 DerivedData 경로에 생성됩니다. 사용자가 Spotlight 또는 앱 목록에서 "cmux DEV"를 찾아 실행하면 빌드된 버전이 실행됩니다.
 
@@ -36,6 +50,21 @@ xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Debug -des
 - `Sources/Panels/` — Panel 프로토콜 및 구현체 (TerminalPanel, BrowserPanel, MarkdownPanel, SurfaceGroup)
 - `vendor/bonsplit/` — Bonsplit 라이브러리 (split pane 관리)
 - `ghostty/` — Ghostty 터미널 엔진 서브모듈
+
+## Fork 추가 CLI 명령
+
+upstream에 없는 fork 고유 CLI 명령들:
+
+- `cmux claude-spawn` — child Claude 프로세스 생성
+- `cmux claude-respawn` — child Claude 재시작
+- `cmux claude-children` — child Claude 목록 조회
+- `cmux claude-parent` — 부모 Claude 조회
+- `cmux claude-kill` — child Claude 종료
+- `cmux claude-wait <child:N>` — child가 idle 또는 exit될 때까지 blocking 대기. `run_in_background`와 함께 사용하면 Claude Code의 `<task-notification>`으로 알림 수신 가능
+- `cmux claude-workspace create [--name <title>]` — conductor child workspace 생성 (소유권 메타데이터 포함)
+- `cmux claude-workspace list` — 현재 conductor가 소유한 child workspace 목록
+- `cmux claude-workspace release --workspace <ref>` — child workspace 소유권 해제
+- `cmux surface-hook` — per-surface 이벤트 hook 관리
 
 ## Worktree 심볼릭 링크 대상
 
