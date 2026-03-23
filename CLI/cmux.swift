@@ -2508,6 +2508,147 @@ struct CMUXCLI {
                 print("OK respawned \(childRef) \(surfaceRef) \(wsRef) (was \(oldRef))")
             }
 
+        case "message-send":
+            let (msToArg, msRem0) = parseOption(commandArgs, name: "--to")
+            let (msContentArg, msRem1) = parseOption(msRem0, name: "--content")
+            let (msFileArg, msRem2) = parseOption(msRem1, name: "--file")
+            let msStdin = msRem2.contains("--stdin")
+
+            guard let msToArg else {
+                throw CLIError(message: "message-send requires --to <ref>")
+            }
+
+            // Resolve current surface
+            let msFromSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+            guard let msFromSurface, !msFromSurface.isEmpty else {
+                throw CLIError(message: "message-send requires CMUX_SURFACE_ID")
+            }
+
+            // Resolve target
+            let msWsId = try normalizeWorkspaceHandle(nil, client: client)
+            guard let msToId = try normalizeSurfaceHandle(msToArg, client: client, workspaceHandle: msWsId) else {
+                throw CLIError(message: "Cannot resolve target: \(msToArg)")
+            }
+
+            // Get content
+            let msContent: String
+            if let msContentArg {
+                msContent = msContentArg
+            } else if let msFileArg {
+                let path = resolvePath(msFileArg)
+                guard let data = FileManager.default.contents(atPath: path),
+                      let text = String(data: data, encoding: .utf8) else {
+                    throw CLIError(message: "Cannot read file: \(msFileArg)")
+                }
+                msContent = text
+            } else if msStdin {
+                var lines: [String] = []
+                while let line = readLine() { lines.append(line) }
+                msContent = lines.joined(separator: "\n")
+            } else {
+                // Remaining args as content
+                let remaining = msRem2.filter { !$0.hasPrefix("--") }
+                guard !remaining.isEmpty else {
+                    throw CLIError(message: "message-send requires --content, --file, or --stdin")
+                }
+                msContent = remaining.joined(separator: " ")
+            }
+
+            let msParams: [String: Any] = [
+                "from_surface_id": msFromSurface,
+                "to_surface_id": msToId,
+                "content": msContent
+            ]
+            let msPayload = try client.sendV2(method: "message.send", params: msParams)
+            if jsonOutput {
+                print(jsonString(msPayload))
+            } else {
+                print("OK sent to \(msToArg)")
+            }
+
+        case "message-read":
+            let (mrFromArg, mrRem0) = parseOption(commandArgs, name: "--from")
+            let mrWait = commandArgs.contains("--wait")
+            let mrPeek = commandArgs.contains("--peek")
+            let (mrTimeoutArg, _) = parseOption(mrRem0, name: "--timeout")
+
+            let mrSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+            guard let mrSurface, !mrSurface.isEmpty else {
+                throw CLIError(message: "message-read requires CMUX_SURFACE_ID")
+            }
+
+            let mrWsId = try normalizeWorkspaceHandle(nil, client: client)
+            let mrFromId: String? = if let mrFromArg {
+                try normalizeSurfaceHandle(mrFromArg, client: client, workspaceHandle: mrWsId)
+            } else {
+                nil
+            }
+
+            let mrTimeout: TimeInterval? = mrTimeoutArg.flatMap { Double($0) }
+            let mrDeadline: Date? = mrTimeout.map { Date().addingTimeInterval($0) }
+
+            while true {
+                var mrParams: [String: Any] = ["surface_id": mrSurface, "peek": mrPeek]
+                if let mrFromId { mrParams["from_surface_id"] = mrFromId }
+
+                let mrPayload = try client.sendV2(method: "message.read", params: mrParams)
+                let mrMessages = mrPayload["messages"] as? [[String: Any]] ?? []
+
+                if !mrMessages.isEmpty {
+                    if jsonOutput {
+                        print(jsonString(mrPayload))
+                    } else {
+                        for msg in mrMessages {
+                            let fromRef = msg["from_surface_ref"] as? String ?? "?"
+                            let content = msg["content"] as? String ?? ""
+                            print("[\(fromRef)] \(content)")
+                        }
+                    }
+                    break
+                }
+
+                if !mrWait {
+                    if jsonOutput {
+                        print(jsonString(["messages": [] as [Any], "count": 0]))
+                    } else {
+                        print("(no messages)")
+                    }
+                    break
+                }
+
+                if let mrDeadline, Date() >= mrDeadline {
+                    throw CLIError(message: "Timed out waiting for messages")
+                }
+
+                Thread.sleep(forTimeInterval: 2.0)
+            }
+
+        case "message-count":
+            let mcSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+            guard let mcSurface, !mcSurface.isEmpty else {
+                throw CLIError(message: "message-count requires CMUX_SURFACE_ID")
+            }
+            let mcPayload = try client.sendV2(method: "message.count", params: ["surface_id": mcSurface])
+            if jsonOutput {
+                print(jsonString(mcPayload))
+            } else {
+                let count = mcPayload["count"] as? Int ?? 0
+                print("\(count)")
+            }
+
+        case "message-clear":
+            let mclSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+            guard let mclSurface, !mclSurface.isEmpty else {
+                throw CLIError(message: "message-clear requires CMUX_SURFACE_ID")
+            }
+            let mclPayload = try client.sendV2(method: "message.clear", params: ["surface_id": mclSurface])
+            if jsonOutput {
+                print(jsonString(mclPayload))
+            } else {
+                let cleared = mclPayload["cleared"] as? Int ?? 0
+                print("OK cleared \(cleared) messages")
+            }
+
         case "surface-hook":
             let shSubcommand = commandArgs.first ?? ""
             let shArgs = commandArgs.dropFirst().map { $0 }
@@ -7658,6 +7799,52 @@ struct CMUXCLI {
               cmux claude-respawn child:2 --prompt "continue the previous task"
               cmux claude-respawn child:1 --json
             """
+        case "message-send":
+            return """
+            Usage: cmux message-send --to <ref> [--content <text> | --file <path> | --stdin]
+
+            Send a message to another surface's message queue.
+
+            Flags:
+              --to <ref>        Target surface (parent:, child:N, surface:N)
+              --content <text>  Message content
+              --file <path>     Read content from file
+              --stdin           Read content from stdin
+
+            Example:
+              cmux message-send --to parent: --content "task done"
+              cmux message-send --to child:1 --file /tmp/result.md
+              echo "hello" | cmux message-send --to parent: --stdin
+            """
+        case "message-read":
+            return """
+            Usage: cmux message-read [--from <ref>] [--wait] [--peek] [--timeout <seconds>]
+
+            Read messages from the current surface's message queue.
+
+            Flags:
+              --from <ref>       Filter by sender
+              --wait             Block until a message arrives (poll every 2s)
+              --peek             Read without removing from queue
+              --timeout <sec>    Max wait time (with --wait)
+
+            Example:
+              cmux message-read
+              cmux message-read --from child:1
+              cmux message-read --wait --timeout 300
+            """
+        case "message-count":
+            return """
+            Usage: cmux message-count
+
+            Show number of unread messages in queue.
+            """
+        case "message-clear":
+            return """
+            Usage: cmux message-clear
+
+            Clear all messages in the current surface's message queue.
+            """
         case "surface-hook":
             return """
             Usage: cmux surface-hook <set|list|unset> [flags]
@@ -12421,6 +12608,10 @@ struct CMUXCLI {
           claude-children [--surface <ref>] [--workspace <ref>]
           claude-parent [--surface <ref>] [--workspace <ref>]
           claude-kill <child:N | surface:N> [--surface <ref>] [--workspace <ref>]
+          message-send --to <ref> [--content <text> | --file <path> | --stdin]
+          message-read [--from <ref>] [--wait] [--peek] [--timeout <seconds>]
+          message-count
+          message-clear
           surface-hook set --surface <ref> --event <event> --command <cmd> [--workspace <ref>]
           surface-hook list --surface <ref> [--event <event>] [--workspace <ref>]
           surface-hook unset --hook-id <uuid>

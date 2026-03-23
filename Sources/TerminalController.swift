@@ -244,6 +244,16 @@ class TerminalController {
     /// Workspace ID → Owner surface ID (conductor that created it)
     private var conductorWorkspaceOwners: [UUID: UUID] = [:]
 
+    // MARK: - Surface Message Queues
+    struct SurfaceMessage {
+        let id: UUID
+        let fromSurfaceId: UUID
+        let content: String
+        let timestamp: Date
+    }
+    /// Per-surface FIFO message queue: target surface ID → [SurfaceMessage]
+    private var surfaceMessageQueues: [UUID: [SurfaceMessage]] = [:]
+
     /// Per-surface last key input timestamp (systemUptime).
     /// Used by `surface.is_typing` / `send --wait-idle` to detect user typing.
     private var lastKeyInputTimeBySurface: [UUID: TimeInterval] = [:]
@@ -2562,6 +2572,16 @@ class TerminalController {
         case "conductor.child_workspaces":
             return v2Result(id: id, self.v2ConductorChildWorkspaces(params: params))
 
+        // Surface message passing
+        case "message.send":
+            return v2Result(id: id, self.v2MessageSend(params: params))
+        case "message.read":
+            return v2Result(id: id, self.v2MessageRead(params: params))
+        case "message.count":
+            return v2Result(id: id, self.v2MessageCount(params: params))
+        case "message.clear":
+            return v2Result(id: id, self.v2MessageClear(params: params))
+
 #if DEBUG
         // Debug / test-only
         case "debug.shortcut.set":
@@ -2696,6 +2716,10 @@ class TerminalController {
             "claude.set_idle_state",
             "conductor.child_workspace",
             "conductor.child_workspaces",
+            "message.send",
+            "message.read",
+            "message.count",
+            "message.clear",
             "surface.clear_history",
             "surface.trigger_flash",
             "surface.set_hook",
@@ -3990,6 +4014,101 @@ class TerminalController {
             "window_id": v2OrNull(windowId?.uuidString),
             "window_ref": v2Ref(kind: .window, uuid: windowId),
             "workspaces": workspaces
+        ])
+    }
+
+    // MARK: - Surface Message Passing
+
+    private func v2MessageSend(params: [String: Any]) -> V2CallResult {
+        guard let fromSurfaceId = v2UUID(params, "from_surface_id") else {
+            return .err(code: "invalid_params", message: "Missing or invalid from_surface_id", data: nil)
+        }
+        guard let toSurfaceId = v2UUID(params, "to_surface_id") else {
+            return .err(code: "invalid_params", message: "Missing or invalid to_surface_id", data: nil)
+        }
+        guard let content = v2String(params, "content") else {
+            return .err(code: "invalid_params", message: "Missing content", data: nil)
+        }
+
+        let msg = SurfaceMessage(
+            id: UUID(),
+            fromSurfaceId: fromSurfaceId,
+            content: content,
+            timestamp: Date()
+        )
+        surfaceMessageQueues[toSurfaceId, default: []].append(msg)
+
+        return .ok([
+            "message_id": msg.id.uuidString,
+            "from_surface_id": fromSurfaceId.uuidString,
+            "from_surface_ref": v2Ref(kind: .surface, uuid: fromSurfaceId),
+            "to_surface_id": toSurfaceId.uuidString,
+            "to_surface_ref": v2Ref(kind: .surface, uuid: toSurfaceId),
+            "queued": true
+        ])
+    }
+
+    private func v2MessageRead(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing or invalid surface_id", data: nil)
+        }
+        let fromFilter = v2UUID(params, "from_surface_id")
+        let peek = (params["peek"] as? Bool) ?? false
+
+        var queue = surfaceMessageQueues[surfaceId] ?? []
+
+        // Filter by sender if specified
+        let matched: [SurfaceMessage]
+        if let fromFilter {
+            matched = queue.filter { $0.fromSurfaceId == fromFilter }
+        } else {
+            matched = queue
+        }
+
+        // Remove consumed messages (unless peek)
+        if !peek && !matched.isEmpty {
+            let matchedIds = Set(matched.map { $0.id })
+            queue.removeAll { matchedIds.contains($0.id) }
+            surfaceMessageQueues[surfaceId] = queue
+        }
+
+        let messages: [[String: Any]] = matched.map { msg in
+            [
+                "message_id": msg.id.uuidString,
+                "from_surface_id": msg.fromSurfaceId.uuidString,
+                "from_surface_ref": v2Ref(kind: .surface, uuid: msg.fromSurfaceId),
+                "content": msg.content,
+                "timestamp": ISO8601DateFormatter().string(from: msg.timestamp)
+            ]
+        }
+
+        return .ok([
+            "surface_id": surfaceId.uuidString,
+            "messages": messages,
+            "count": messages.count
+        ])
+    }
+
+    private func v2MessageCount(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing or invalid surface_id", data: nil)
+        }
+        let count = surfaceMessageQueues[surfaceId]?.count ?? 0
+        return .ok([
+            "surface_id": surfaceId.uuidString,
+            "count": count
+        ])
+    }
+
+    private func v2MessageClear(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing or invalid surface_id", data: nil)
+        }
+        let cleared = surfaceMessageQueues[surfaceId]?.count ?? 0
+        surfaceMessageQueues[surfaceId] = nil
+        return .ok([
+            "surface_id": surfaceId.uuidString,
+            "cleared": cleared
         ])
     }
 
