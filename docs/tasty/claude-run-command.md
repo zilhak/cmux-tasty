@@ -6,7 +6,7 @@ Claude Code 실행과 프롬프트 전송을 하나의 명령으로 통합한 CL
 
 cmux surface에서 Claude Code를 실행하고 프롬프트를 보내려면 cd → claude 실행 → ❯ 대기 → 텍스트 전송 → Enter 제출까지 여러 단계가 필요했다. `claude-run`은 이를 하나로 통합한다.
 
-참고: `claude-spawn`이 parent-child 관계 추적까지 포함하는 상위 기능이므로, conductor 패턴에서는 `claude-spawn`을 사용하는 것이 권장된다. `claude-run`은 단순히 "이 surface에서 claude를 띄우고 프롬프트를 보내는" 저수준 명령이다.
+참고: `claude-spawn`이 parent-child 관계 추적까지 포함하는 상위 기능이므로, parent-child 패턴에서는 `claude-spawn`을 사용하는 것이 권장된다. `claude-run`은 단순히 "이 surface에서 claude를 띄우고 프롬프트를 보내는" 저수준 명령이다.
 
 ## 사용법
 

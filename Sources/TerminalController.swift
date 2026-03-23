@@ -240,9 +240,9 @@ class TerminalController {
     /// Next child index counter per parent
     private var claudeNextChildIndex: [UUID: Int] = [:]
 
-    // MARK: - Conductor Workspace Ownership
-    /// Workspace ID → Owner surface ID (conductor that created it)
-    private var conductorWorkspaceOwners: [UUID: UUID] = [:]
+    // MARK: - Claude Workspace Ownership
+    /// Workspace ID → Owner surface ID (parent claude that created it)
+    private var claudeWorkspaceOwners: [UUID: UUID] = [:]
 
     /// Per-surface last key input timestamp (systemUptime).
     /// Used by `surface.is_typing` / `send --wait-idle` to detect user typing.
@@ -2556,11 +2556,11 @@ class TerminalController {
         case "claude.set_idle_state":
             return v2Result(id: id, self.v2ClaudeSetIdleState(params: params))
 
-        // Conductor child workspace management
-        case "conductor.child_workspace":
-            return v2Result(id: id, self.v2ConductorChildWorkspace(params: params))
-        case "conductor.child_workspaces":
-            return v2Result(id: id, self.v2ConductorChildWorkspaces(params: params))
+        // Claude child workspace management
+        case "claude.child_workspace":
+            return v2Result(id: id, self.v2ClaudeChildWorkspace(params: params))
+        case "claude.child_workspaces":
+            return v2Result(id: id, self.v2ClaudeChildWorkspaces(params: params))
 
 #if DEBUG
         // Debug / test-only
@@ -2694,8 +2694,8 @@ class TerminalController {
             "claude.kill_child",
             "claude.respawn",
             "claude.set_idle_state",
-            "conductor.child_workspace",
-            "conductor.child_workspaces",
+            "claude.child_workspace",
+            "claude.child_workspaces",
             "surface.clear_history",
             "surface.trigger_flash",
             "surface.set_hook",
@@ -3758,7 +3758,7 @@ class TerminalController {
         }
 
         if found {
-            conductorWorkspaceOwners.removeValue(forKey: wsId)
+            claudeWorkspaceOwners.removeValue(forKey: wsId)
         }
 
         let windowId = v2ResolveWindowId(tabManager: tabManager)
@@ -3911,8 +3911,8 @@ class TerminalController {
         ])
     }
 
-    // MARK: - Conductor child workspace management
-    private func v2ConductorChildWorkspace(params: [String: Any]) -> V2CallResult {
+    // MARK: - Claude child workspace management
+    private func v2ClaudeChildWorkspace(params: [String: Any]) -> V2CallResult {
         guard let tabManager = v2ResolveTabManager(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
         }
@@ -3949,7 +3949,7 @@ class TerminalController {
             return .err(code: "internal_error", message: "Failed to create workspace", data: nil)
         }
 
-        conductorWorkspaceOwners[newId] = ownerSurfaceId
+        claudeWorkspaceOwners[newId] = ownerSurfaceId
 
         let windowId = v2ResolveWindowId(tabManager: tabManager)
         return .ok([
@@ -3961,7 +3961,7 @@ class TerminalController {
         ])
     }
 
-    private func v2ConductorChildWorkspaces(params: [String: Any]) -> V2CallResult {
+    private func v2ClaudeChildWorkspaces(params: [String: Any]) -> V2CallResult {
         guard let tabManager = v2ResolveTabManager(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
         }
@@ -3969,7 +3969,7 @@ class TerminalController {
             return .err(code: "invalid_params", message: "Missing or invalid owner_surface_id", data: nil)
         }
 
-        let ownedWsIds = conductorWorkspaceOwners.filter { $0.value == ownerSurfaceId }.map { $0.key }
+        let ownedWsIds = claudeWorkspaceOwners.filter { $0.value == ownerSurfaceId }.map { $0.key }
 
         var workspaces: [[String: Any]] = []
         v2MainSync {

@@ -4,7 +4,7 @@
 
 ## 배경
 
-`cmux claude-wait child:N`은 child Claude가 idle 상태가 될 때까지 blocking 대기하는 명령이다. Conductor 패턴에서 child 작업 완료를 감지하는 핵심 메커니즘으로, `run_in_background`와 함께 사용하면 Claude Code의 `<task-notification>`으로 완료 알림을 수신할 수 있다.
+`cmux claude-wait child:N`은 child Claude가 idle 상태가 될 때까지 blocking 대기하는 명령이다. Parent-child 패턴에서 child 작업 완료를 감지하는 핵심 메커니즘으로, `run_in_background`와 함께 사용하면 Claude Code의 `<task-notification>`으로 완료 알림을 수신할 수 있다.
 
 ## 문제
 

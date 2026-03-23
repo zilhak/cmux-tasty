@@ -2192,21 +2192,21 @@ struct CMUXCLI {
 
             print("OK")
 
-        case "conductor-child-workspace":
+        case "claude-workspace":
             let (cwCwdArg, cwRem0) = parseOption(commandArgs, name: "--cwd")
             let (cwTitleArg, cwRem1) = parseOption(cwRem0, name: "--title")
             let (cwOwnerArg, _) = parseOption(cwRem1, name: "--owner")
 
             let cwOwnerSurface = cwOwnerArg ?? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
             guard let cwOwnerSurface, !cwOwnerSurface.isEmpty else {
-                throw CLIError(message: "conductor-child-workspace requires --owner or CMUX_SURFACE_ID")
+                throw CLIError(message: "claude-workspace requires --owner or CMUX_SURFACE_ID")
             }
 
             var cwParams: [String: Any] = ["owner_surface_id": cwOwnerSurface]
             if let cwCwdArg { cwParams["cwd"] = resolvePath(cwCwdArg) }
             if let cwTitleArg { cwParams["title"] = cwTitleArg }
 
-            let cwPayload = try client.sendV2(method: "conductor.child_workspace", params: cwParams)
+            let cwPayload = try client.sendV2(method: "claude.child_workspace", params: cwParams)
             if jsonOutput {
                 print(jsonString(cwPayload))
             } else {
@@ -2215,16 +2215,16 @@ struct CMUXCLI {
                 print("OK \(wsRef) \(wsId)")
             }
 
-        case "conductor-child-workspaces":
+        case "claude-workspaces":
             let (cwsOwnerArg, _) = parseOption(commandArgs, name: "--owner")
 
             let cwsOwnerSurface = cwsOwnerArg ?? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
             guard let cwsOwnerSurface, !cwsOwnerSurface.isEmpty else {
-                throw CLIError(message: "conductor-child-workspaces requires --owner or CMUX_SURFACE_ID")
+                throw CLIError(message: "claude-workspaces requires --owner or CMUX_SURFACE_ID")
             }
 
             let cwsParams: [String: Any] = ["owner_surface_id": cwsOwnerSurface]
-            let cwsPayload = try client.sendV2(method: "conductor.child_workspaces", params: cwsParams)
+            let cwsPayload = try client.sendV2(method: "claude.child_workspaces", params: cwsParams)
             if jsonOutput {
                 print(jsonString(cwsPayload))
             } else {

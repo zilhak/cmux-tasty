@@ -4,7 +4,7 @@ Claude Code 세션이 응답을 완료하고 idle 상태로 돌아왔을 때 fir
 
 ## 배경
 
-Conductor 패턴에서 worker Claude의 작업 완료를 자동으로 감지하기 위해 추가. 기존 `process-exit` 이벤트는 프로세스 종료 시에만 fire되어, Claude Code가 응답을 끝내고 `❯` 프롬프트로 돌아간 시점을 감지할 수 없었다.
+Parent-child 패턴에서 child Claude의 작업 완료를 자동으로 감지하기 위해 추가. 기존 `process-exit` 이벤트는 프로세스 종료 시에만 fire되어, Claude Code가 응답을 끝내고 `❯` 프롬프트로 돌아간 시점을 감지할 수 없었다.
 
 ## 동작 원리
 

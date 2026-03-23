@@ -55,20 +55,30 @@ xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Debug -des
 
 upstream에 없는 fork 고유 CLI 명령들:
 
-- `cmux claude-spawn` — child Claude 프로세스 생성
-- `cmux claude-respawn` — child Claude 재시작
+### Mark / Delta 읽기
+- `cmux set-mark` — 현재 터미널 출력 위치에 마크 설정 (이후 delta 읽기 기준점)
+- `cmux read-since-mark [--surface <ref>] [--clear]` — 마크 이후 새로 추가된 출력만 읽기
+
+### Claude 멀티에이전트
+- `cmux claude-spawn [--cwd <path>] [--prompt <text>] [--prompt-file <path>]` — child Claude 프로세스 생성
+- `cmux claude-respawn <child:N | surface:id> [--prompt <text>]` — child Claude 재시작
 - `cmux claude-children` — child Claude 목록 조회
 - `cmux claude-parent` — 부모 Claude 조회
-- `cmux claude-kill` — child Claude 종료
-- `cmux claude-wait <child:N>` — child가 idle 또는 exit될 때까지 blocking 대기. `run_in_background`와 함께 사용하면 Claude Code의 `<task-notification>`으로 알림 수신 가능
-- `cmux claude-workspace create [--name <title>]` — conductor child workspace 생성 (소유권 메타데이터 포함)
-- `cmux claude-workspace list` — 현재 conductor가 소유한 child workspace 목록
-- `cmux claude-workspace release --workspace <ref>` — child workspace 소유권 해제
-- `cmux surface-hook` — per-surface 이벤트 hook 관리
+- `cmux claude-kill <child:N | surface:N>` — child Claude 종료
+- `cmux claude-wait <child:N> [--timeout <seconds>]` — child가 idle 또는 exit될 때까지 blocking 대기. `run_in_background`와 함께 사용하면 Claude Code의 `<task-notification>`으로 알림 수신 가능. idle 감지는 hook 기반 플래그 사용
+- `cmux claude-status [--lines <n>]` — 워크스페이스 내 터미널 surface들의 Claude 실행 상태 확인 (마지막 변경 시간, 미리보기)
+- `cmux claude-run --surface <ref> [--cwd <path>] (--prompt <text> | --prompt-file <path>)` — surface에서 Claude Code 실행 + 프롬프트 전송을 하나로 통합한 저수준 명령
+
+### Child 워크스페이스
+- `cmux claude-workspace [--cwd <path>] [--title <name>] [--owner <surface>]` — child workspace 생성 (소유권 메타데이터 포함)
+- `cmux claude-workspaces [--owner <surface>]` — 현재 parent가 소유한 child workspace 목록
+
+### Surface Hook
+- `cmux surface-hook set --surface <ref> --event <event> --command <cmd>` — per-surface 이벤트 hook 관리
 
 ## Worktree 심볼릭 링크 대상
 
-Conductor가 worktree를 생성할 때, 아래 디렉토리는 수정 대상이 아니므로 심볼릭 링크로 연결한다:
+Parent Claude가 worktree를 생성할 때, 아래 디렉토리는 수정 대상이 아니므로 심볼릭 링크로 연결한다:
 
 - `ghostty/` — 터미널 엔진 서브모듈 (~3.9GB)
 - `GhosttyKit.xcframework/` — 프레임워크 바이너리 (~540MB)
