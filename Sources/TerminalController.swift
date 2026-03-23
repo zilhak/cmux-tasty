@@ -6264,8 +6264,6 @@ class TerminalController {
         let cwd = v2String(params, "cwd")
         let prompt = v2String(params, "prompt")
         let promptFilePath = v2String(params, "prompt_file_path")
-        let onIdle = v2String(params, "on_idle") ?? "none"
-
         // Resolve workspace: prefer explicit workspace_id, then find workspace containing parent surface
         var result: V2CallResult = .err(code: "internal_error", message: "Failed to spawn claude", data: nil)
 
@@ -6395,38 +6393,6 @@ class TerminalController {
             sendSocketText(prompt, surface: surface)
             Thread.sleep(forTimeInterval: 1.0)
             sendSocketText("\n", surface: surface)
-        }
-
-        // Step 7: Register hooks if on_idle == "notify-parent"
-        if onIdle == "notify-parent" {
-            let parentRef = v2MainSync { v2Ref(kind: .surface, uuid: parentSurfaceId) } as? String ?? parentSurfaceId.uuidString
-            // Use parent's workspace (not child's) so the send command can find the parent surface
-            let parentWsRef = v2MainSync {
-                let parentWs = tabManager.tabs.first(where: { $0.panels[parentSurfaceId] != nil })
-                return parentWs.map { v2Ref(kind: .workspace, uuid: $0.id) } as? String
-            } ?? ""
-            let wsFlag = parentWsRef.isEmpty ? "" : " --workspace \(parentWsRef)"
-            // Use bundled CLI path for hook command (falls back to PATH cmux)
-            let cliPath = Bundle.main.url(forResource: "cmux", withExtension: nil, subdirectory: "bin")?.path ?? "cmux"
-
-            // 7a: claude-idle hook — uses --wait-idle so concurrent idle notifications
-            // are queued server-side and delivered one at a time when parent is idle.
-            let idleMsg = "Child child:\(childIndex) idle 전환됨. claude-children으로 상태를 점검하고 완료 여부를 판단하라."
-            let idleHookCommand = "\(cliPath) send --wait-idle --surface \(parentRef)\(wsFlag) \"\(idleMsg)\" && \(cliPath) notify --title 'Worker Idle' --body 'child:\(childIndex)'"
-            SurfaceHookManager.shared.setHook(
-                surfaceId: childSurfaceId,
-                event: .claudeIdle,
-                command: idleHookCommand
-            )
-
-            // 7b: process-exit hook — notify parent when child process terminates
-            let exitMsg = "Child child:\(childIndex) 종료됨(exit). claude-children으로 상태를 점검하라."
-            let exitHookCommand = "\(cliPath) send --wait-idle --surface \(parentRef)\(wsFlag) \"\(exitMsg)\" && \(cliPath) notify --title 'Worker Exit' --body 'child:\(childIndex)'"
-            SurfaceHookManager.shared.setHook(
-                surfaceId: childSurfaceId,
-                event: .processExit,
-                command: exitHookCommand
-            )
         }
 
         let childRef = v2Ref(kind: .surface, uuid: childSurfaceId)
@@ -6644,8 +6610,6 @@ class TerminalController {
         let cwd = v2String(params, "cwd") ?? oldEntry.cwd
         let prompt = v2String(params, "prompt")
         let promptFilePath = v2String(params, "prompt_file_path")
-        let onIdle = v2String(params, "on_idle") ?? "none"
-
         // Step 1: Close old child surface if still alive
         v2MainSync {
             if let ws = tabManager.tabs.first(where: { $0.panels[oldChildSurfaceId] != nil }) {
@@ -6755,25 +6719,6 @@ class TerminalController {
             sendSocketText(prompt, surface: surface)
             Thread.sleep(forTimeInterval: 1.0)
             sendSocketText("\n", surface: surface)
-        }
-
-        // Step 8: Register claude-idle hook if on_idle == "notify-parent"
-        if onIdle == "notify-parent" {
-            let parentRef = v2MainSync { v2Ref(kind: .surface, uuid: parentSurfaceId) } as? String ?? parentSurfaceId.uuidString
-            // Use parent's workspace (not child's) so the send command can find the parent surface
-            let parentWsRef = v2MainSync {
-                let parentWs = tabManager.tabs.first(where: { $0.panels[parentSurfaceId] != nil })
-                return parentWs.map { v2Ref(kind: .workspace, uuid: $0.id) } as? String
-            } ?? ""
-            let wsFlag = parentWsRef.isEmpty ? "" : " --workspace \(parentWsRef)"
-            let cliPath = Bundle.main.url(forResource: "cmux", withExtension: nil, subdirectory: "bin")?.path ?? "cmux"
-            let msg = "Child child:\(oldChildIndex) idle 전환됨. claude-children으로 상태를 점검하고 완료 여부를 판단하라."
-            let hookCommand = "\(cliPath) send --surface \(parentRef)\(wsFlag) \"\(msg)\" && sleep 1 && \(cliPath) send --surface \(parentRef)\(wsFlag) '\\n' && \(cliPath) notify --title 'Worker Idle' --body 'child:\(oldChildIndex)'"
-            SurfaceHookManager.shared.setHook(
-                surfaceId: childSurfaceId,
-                event: .claudeIdle,
-                command: hookCommand
-            )
         }
 
         return .ok([

@@ -2249,8 +2249,6 @@ struct CMUXCLI {
             let (csCwdArg, csRem1) = parseOption(csRem0, name: "--cwd")
             let (csPromptArg, csRem2) = parseOption(csRem1, name: "--prompt")
             let (csPromptFileArg, csRem3) = parseOption(csRem2, name: "--prompt-file")
-            let (csOnIdleArg, _) = parseOption(csRem3, name: "--on-idle")
-
             let csParentSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
             guard let csParentSurface, !csParentSurface.isEmpty else {
                 throw CLIError(message: "claude-spawn requires CMUX_SURFACE_ID (run from inside a cmux terminal)")
@@ -2265,7 +2263,6 @@ struct CMUXCLI {
             if let csCwdArg { csParams["cwd"] = resolvePath(csCwdArg) }
             if let csPromptArg { csParams["prompt"] = csPromptArg }
             if let csPromptFileArg { csParams["prompt_file_path"] = resolvePath(csPromptFileArg) }
-            if let csOnIdleArg { csParams["on_idle"] = csOnIdleArg }
 
             let csPayload = try client.sendV2(method: "claude.spawn", params: csParams)
             if jsonOutput {
@@ -2400,8 +2397,7 @@ struct CMUXCLI {
             let (crCwdArg, crRem1) = parseOption(crRem0, name: "--cwd")
             let (crPromptArg, crRem2) = parseOption(crRem1, name: "--prompt")
             let (crPromptFileArg, crRem3) = parseOption(crRem2, name: "--prompt-file")
-            let (crOnIdleArg, crRem4) = parseOption(crRem3, name: "--on-idle")
-            let (crSfArg, crRem5) = parseOption(crRem4, name: "--surface")
+            let (crSfArg, crRem5) = parseOption(crRem3, name: "--surface")
 
             // Parse target: child:N or surface:<id>
             guard let crTarget = crRem5.first(where: { !$0.hasPrefix("--") }) else {
@@ -2416,7 +2412,6 @@ struct CMUXCLI {
             if let crCwdArg { crParams["cwd"] = resolvePath(crCwdArg) }
             if let crPromptArg { crParams["prompt"] = crPromptArg }
             if let crPromptFileArg { crParams["prompt_file_path"] = resolvePath(crPromptFileArg) }
-            if let crOnIdleArg { crParams["on_idle"] = crOnIdleArg }
 
             // Resolve parent surface
             let crParentSurfaceArg = crSfArg ?? (crWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
@@ -7487,14 +7482,13 @@ struct CMUXCLI {
               --cwd <path>           Working directory for the child
               --prompt <text>        Prompt to send after Claude starts
               --prompt-file <path>   File containing the prompt
-              --on-idle <action>     Action on idle: notify-parent | none (default: none)
 
             Output (plain):
               OK child:1 surface:5 workspace:2
 
             Example:
               cmux claude-spawn --prompt "fix the build errors"
-              cmux claude-spawn --cwd ~/project --prompt-file /tmp/task.md --on-idle notify-parent
+              cmux claude-spawn --cwd ~/project --prompt-file /tmp/task.md
               cmux claude-spawn --json
             """
         case "claude-children":
@@ -7556,6 +7550,24 @@ struct CMUXCLI {
               cmux claude-kill child:2 --surface surface:3
               cmux claude-kill child:1 --json
             """
+        case "claude-wait":
+            return """
+            Usage: cmux claude-wait <child:N> [--timeout <seconds>]
+
+            Block until a child Claude process becomes idle or exits.
+            Designed to be used with Bash run_in_background for non-intrusive notifications.
+
+            Arguments:
+              <child:N>              Child reference (e.g., child:3)
+
+            Flags:
+              --timeout <seconds>    Maximum wait time (default: unlimited)
+              --json                 Output JSON
+
+            Example:
+              cmux claude-wait child:3
+              cmux claude-wait child:1 --timeout 300
+            """
         case "claude-respawn":
             return """
             Usage: cmux claude-respawn <child:N | surface:id> [flags]
@@ -7573,7 +7585,6 @@ struct CMUXCLI {
               --cwd <path>           Override working directory (default: reuse original)
               --prompt <text>        Prompt to send after Claude restarts
               --prompt-file <path>   File containing the prompt
-              --on-idle <action>     Action on idle: notify-parent | none (default: none)
 
             Output (plain):
               OK respawned child:1 surface:7 workspace:2 (was <old-surface-id>)
@@ -7581,7 +7592,7 @@ struct CMUXCLI {
             Example:
               cmux claude-respawn child:1
               cmux claude-respawn child:2 --prompt "continue the previous task"
-              cmux claude-respawn child:1 --on-idle notify-parent --json
+              cmux claude-respawn child:1 --json
             """
         case "surface-hook":
             return """
@@ -11174,7 +11185,7 @@ struct CMUXCLI {
                     color: "#8E8E93"
                 )
 
-                // Fire claude-idle surface hooks (used by conductor's --on-idle notify-parent)
+                // Fire claude-idle surface hooks (for manually registered hooks)
                 _ = try? client.sendV2(method: "surface.fire_hook", params: [
                     "surface_id": surfaceId,
                     "event": "claude-idle",
@@ -12318,8 +12329,9 @@ struct CMUXCLI {
           set-mark [--workspace <id|ref>] [--surface <id|ref>]
           read-since-mark [--workspace <id|ref>] [--surface <id|ref>] [--clear]
           claude-status [--workspace <id|ref>] [--lines <n>]
-          claude-spawn [--workspace <ref>] [--cwd <path>] [--prompt <text>] [--prompt-file <path>] [--on-idle notify-parent|none]
-          claude-respawn <child:N | surface:id> [--cwd <path>] [--prompt <text>] [--prompt-file <path>] [--on-idle <action>]
+          claude-spawn [--workspace <ref>] [--cwd <path>] [--prompt <text>] [--prompt-file <path>]
+          claude-respawn <child:N | surface:id> [--cwd <path>] [--prompt <text>] [--prompt-file <path>]
+          claude-wait <child:N> [--timeout <seconds>]
           claude-children [--surface <ref>] [--workspace <ref>]
           claude-parent [--surface <ref>] [--workspace <ref>]
           claude-kill <child:N | surface:N> [--surface <ref>] [--workspace <ref>]
