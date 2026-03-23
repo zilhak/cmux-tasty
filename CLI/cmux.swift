@@ -2217,7 +2217,9 @@ struct CMUXCLI {
             let (csCwdArg, csRem1) = parseOption(csRem0, name: "--cwd")
             let (csPromptArg, csRem2) = parseOption(csRem1, name: "--prompt")
             let (csPromptFileArg, csRem3) = parseOption(csRem2, name: "--prompt-file")
-            let (csOnIdleArg, _) = parseOption(csRem3, name: "--on-idle")
+            let (csOnIdleArg, csRem4) = parseOption(csRem3, name: "--on-idle")
+            let (csRoleArg, csRem5) = parseOption(csRem4, name: "--role")
+            let (csNicknameArg, _) = parseOption(csRem5, name: "--nickname")
 
             let csParentSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
             guard let csParentSurface, !csParentSurface.isEmpty else {
@@ -2234,6 +2236,8 @@ struct CMUXCLI {
             if let csPromptArg { csParams["prompt"] = csPromptArg }
             if let csPromptFileArg { csParams["prompt_file_path"] = resolvePath(csPromptFileArg) }
             if let csOnIdleArg { csParams["on_idle"] = csOnIdleArg }
+            if let csRoleArg { csParams["role"] = csRoleArg }
+            if let csNicknameArg { csParams["nickname"] = csNicknameArg }
 
             let csPayload = try client.sendV2(method: "claude.spawn", params: csParams)
             if jsonOutput {
@@ -2290,8 +2294,21 @@ struct CMUXCLI {
                         timeStr = "\(secondsSinceChange / 60)m \(secondsSinceChange % 60)s ago"
                     }
 
+                    let childNickname = child["nickname"] as? String
+                    let childRole = child["role"] as? String
+                    let label: String
+                    if let n = childNickname, let r = childRole {
+                        label = "  [\(n)/\(r)]"
+                    } else if let n = childNickname {
+                        label = "  [\(n)]"
+                    } else if let r = childRole {
+                        label = "  [\(r)]"
+                    } else {
+                        label = ""
+                    }
+
                     let preview = lastLines.last ?? "(empty)"
-                    print("child:\(idx)  \(sRef)  \(timeStr)  → \(preview)")
+                    print("child:\(idx)  \(sRef)\(label)  \(timeStr)  → \(preview)")
                 }
             }
 
@@ -2369,10 +2386,12 @@ struct CMUXCLI {
             let (crPromptArg, crRem2) = parseOption(crRem1, name: "--prompt")
             let (crPromptFileArg, crRem3) = parseOption(crRem2, name: "--prompt-file")
             let (crOnIdleArg, crRem4) = parseOption(crRem3, name: "--on-idle")
-            let (crSfArg, crRem5) = parseOption(crRem4, name: "--surface")
+            let (crRoleArg, crRem5) = parseOption(crRem4, name: "--role")
+            let (crNicknameArg, crRem6) = parseOption(crRem5, name: "--nickname")
+            let (crSfArg, crRem7) = parseOption(crRem6, name: "--surface")
 
             // Parse target: child:N or surface:<id>
-            guard let crTarget = crRem5.first(where: { !$0.hasPrefix("--") }) else {
+            guard let crTarget = crRem7.first(where: { !$0.hasPrefix("--") }) else {
                 throw CLIError(message: "claude-respawn requires a target (child:<N> or surface:<id>)")
             }
 
@@ -2385,6 +2404,8 @@ struct CMUXCLI {
             if let crPromptArg { crParams["prompt"] = crPromptArg }
             if let crPromptFileArg { crParams["prompt_file_path"] = resolvePath(crPromptFileArg) }
             if let crOnIdleArg { crParams["on_idle"] = crOnIdleArg }
+            if let crRoleArg { crParams["role"] = crRoleArg }
+            if let crNicknameArg { crParams["nickname"] = crNicknameArg }
 
             // Resolve parent surface
             let crParentSurfaceArg = crSfArg ?? (crWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
@@ -7438,6 +7459,8 @@ struct CMUXCLI {
               --prompt <text>        Prompt to send after Claude starts
               --prompt-file <path>   File containing the prompt
               --on-idle <action>     Action on idle: notify-parent | none (default: none)
+              --role <text>          Role label for the child (e.g. "찬성측", "reviewer")
+              --nickname <text>      Nickname for the child (e.g. "Alice", "Bob")
 
             Output (plain):
               OK child:1 surface:5 workspace:2
@@ -7445,6 +7468,7 @@ struct CMUXCLI {
             Example:
               cmux claude-spawn --prompt "fix the build errors"
               cmux claude-spawn --cwd ~/project --prompt-file /tmp/task.md --on-idle notify-parent
+              cmux claude-spawn --nickname Alice --role 찬성측 --prompt "argue in favor"
               cmux claude-spawn --json
             """
         case "claude-children":
@@ -7458,8 +7482,10 @@ struct CMUXCLI {
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
 
             Output (plain):
-              child:1  surface:5  3s ago   → last output line
-              child:2  surface:6  idle     → last output line
+              child:1  surface:5  [Alice/찬성측]  3s ago   → last output line
+              child:2  surface:6  [Bob/반대측]    idle     → last output line
+
+            When role/nickname are set, they appear as [nickname/role], [nickname], or [role].
 
             Example:
               cmux claude-children
@@ -7524,6 +7550,8 @@ struct CMUXCLI {
               --prompt <text>        Prompt to send after Claude restarts
               --prompt-file <path>   File containing the prompt
               --on-idle <action>     Action on idle: notify-parent | none (default: none)
+              --role <text>          Override role label (default: reuse original)
+              --nickname <text>      Override nickname (default: reuse original)
 
             Output (plain):
               OK respawned child:1 surface:7 workspace:2 (was <old-surface-id>)
@@ -12074,8 +12102,8 @@ struct CMUXCLI {
           set-mark [--workspace <id|ref>] [--surface <id|ref>]
           read-since-mark [--workspace <id|ref>] [--surface <id|ref>] [--clear]
           claude-status [--workspace <id|ref>] [--lines <n>]
-          claude-spawn [--workspace <ref>] [--cwd <path>] [--prompt <text>] [--prompt-file <path>] [--on-idle notify-parent|none]
-          claude-respawn <child:N | surface:id> [--cwd <path>] [--prompt <text>] [--prompt-file <path>] [--on-idle <action>]
+          claude-spawn [--workspace <ref>] [--cwd <path>] [--prompt <text>] [--prompt-file <path>] [--on-idle notify-parent|none] [--role <text>] [--nickname <text>]
+          claude-respawn <child:N | surface:id> [--cwd <path>] [--prompt <text>] [--prompt-file <path>] [--on-idle <action>] [--role <text>] [--nickname <text>]
           claude-children [--surface <ref>] [--workspace <ref>]
           claude-parent [--surface <ref>] [--workspace <ref>]
           claude-kill <child:N | surface:N> [--surface <ref>] [--workspace <ref>]

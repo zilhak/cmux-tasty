@@ -229,6 +229,8 @@ class TerminalController {
         let childSurfaceId: UUID
         let index: Int
         let cwd: String?
+        let role: String?
+        let nickname: String?
         let createdAt: Date
     }
     /// Parent surface ID → [Child entries]
@@ -6206,6 +6208,8 @@ class TerminalController {
         let prompt = v2String(params, "prompt")
         let promptFilePath = v2String(params, "prompt_file_path")
         let onIdle = v2String(params, "on_idle") ?? "none"
+        let role = v2String(params, "role")
+        let nickname = v2String(params, "nickname")
 
         // Resolve workspace: prefer explicit workspace_id, then find workspace containing parent surface
         var result: V2CallResult = .err(code: "internal_error", message: "Failed to spawn claude", data: nil)
@@ -6262,6 +6266,8 @@ class TerminalController {
             childSurfaceId: childSurfaceId,
             index: childIndex,
             cwd: cwd,
+            role: role,
+            nickname: nickname,
             createdAt: Date()
         )
         claudeParentChildMap[parentSurfaceId, default: []].append(entry)
@@ -6373,6 +6379,8 @@ class TerminalController {
             "child_surface_ref": childRef,
             "child_ref": "child:\(childIndex)",
             "child_index": childIndex,
+            "role": v2OrNull(role),
+            "nickname": v2OrNull(nickname),
             "parent_surface_id": parentSurfaceId.uuidString,
             "parent_surface_ref": v2Ref(kind: .surface, uuid: parentSurfaceId),
             "workspace_id": ws.id.uuidString,
@@ -6446,6 +6454,8 @@ class TerminalController {
                     "surface_id": childId.uuidString,
                     "surface_ref": v2Ref(kind: .surface, uuid: childId),
                     "cwd": v2OrNull(entry.cwd),
+                    "role": v2OrNull(entry.role),
+                    "nickname": v2OrNull(entry.nickname),
                     "created_at": ISO8601DateFormatter().string(from: entry.createdAt),
                     "status": status.isEmpty ? NSNull() : status
                 ])
@@ -6582,6 +6592,8 @@ class TerminalController {
         let prompt = v2String(params, "prompt")
         let promptFilePath = v2String(params, "prompt_file_path")
         let onIdle = v2String(params, "on_idle") ?? "none"
+        let role = v2String(params, "role") ?? oldEntry.role
+        let nickname = v2String(params, "nickname") ?? oldEntry.nickname
 
         // Step 1: Close old child surface if still alive
         v2MainSync {
@@ -6631,6 +6643,8 @@ class TerminalController {
             childSurfaceId: childSurfaceId,
             index: oldChildIndex,
             cwd: cwd,
+            role: role,
+            nickname: nickname,
             createdAt: Date()
         )
         claudeParentChildMap[parentSurfaceId, default: []].append(entry)
@@ -6714,6 +6728,8 @@ class TerminalController {
             "child_surface_ref": v2Ref(kind: .surface, uuid: childSurfaceId),
             "child_ref": "child:\(oldChildIndex)",
             "child_index": oldChildIndex,
+            "role": v2OrNull(role),
+            "nickname": v2OrNull(nickname),
             "parent_surface_id": parentSurfaceId.uuidString,
             "parent_surface_ref": v2Ref(kind: .surface, uuid: parentSurfaceId),
             "workspace_id": ws.id.uuidString,
