@@ -4015,7 +4015,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         return true
     }
 
-        // Visibility is used for focus gating, not for libghostty occlusion.
+        // Visibility is used for focus gating. Explicit portal visibility transitions
+        // also drive Ghostty occlusion so hidden workspace/split surfaces pause and
+        // queue a redraw when they become visible again.
         fileprivate var isVisibleInUI: Bool { visibleInUI }
         fileprivate func setVisibleInUI(_ visible: Bool) {
             visibleInUI = visible
@@ -5868,7 +5870,11 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         }
         guard let surface = surface else { return }
         let point = convert(event.locationInWindow, from: nil)
-        ghostty_surface_mouse_pos(surface, point.x, bounds.height - point.y, modsFromEvent(event))
+        // Only update mouse position on the first click to prevent unwanted cursor
+        // movement during double-click selection (issue #1698)
+        if event.clickCount == 1 {
+            ghostty_surface_mouse_pos(surface, point.x, bounds.height - point.y, modsFromEvent(event))
+        }
         _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, modsFromEvent(event))
     }
 
@@ -6058,6 +6064,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        NotificationCenter.default.post(name: .ghosttyDidReceiveWheelScroll, object: self)
         guard let surface = surface else { return }
         lastScrollEventTime = CACurrentMediaTime()
         Self.focusLog("scrollWheel: surface=\(terminalSurface?.id.uuidString ?? "nil") firstResponder=\(String(describing: window?.firstResponder))")
@@ -6459,6 +6466,7 @@ enum GhosttyNotificationKey {
 extension Notification.Name {
     static let ghosttyDidUpdateScrollbar = Notification.Name("ghosttyDidUpdateScrollbar")
     static let ghosttyDidUpdateCellSize = Notification.Name("ghosttyDidUpdateCellSize")
+    static let ghosttyDidReceiveWheelScroll = Notification.Name("ghosttyDidReceiveWheelScroll")
     static let ghosttySearchFocus = Notification.Name("ghosttySearchFocus")
     static let ghosttyConfigDidReload = Notification.Name("ghosttyConfigDidReload")
     static let ghosttyDefaultBackgroundDidChange = Notification.Name("ghosttyDefaultBackgroundDidChange")
@@ -6592,10 +6600,13 @@ final class GhosttySurfaceScrollView: NSView {
     /// When true, auto-scroll should be suspended to prevent the "doomscroll" bug
     /// where the terminal fights the user's scroll position.
     private var userScrolledAwayFromBottom = false
+    private var pendingExplicitWheelScroll = false
+    private var allowExplicitScrollbarSync = false
     /// Threshold in points from bottom to consider "at bottom" (allows for minor float drift)
     private static let scrollToBottomThreshold: CGFloat = 5.0
     private var isActive = true
     private var lastFocusRefreshAt: CFTimeInterval = 0
+    private var lastRequestedPortalOcclusionVisible: Bool?
     private var activeDropZone: DropZone?
     private var pendingDropZone: DropZone?
     private var dropZoneOverlayAnimationGeneration: UInt64 = 0
@@ -7015,6 +7026,14 @@ final class GhosttySurfaceScrollView: NSView {
             queue: .main
         ) { [weak self] notification in
             self?.handleScrollbarUpdate(notification)
+        })
+
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .ghosttyDidReceiveWheelScroll,
+            object: surfaceView,
+            queue: .main
+        ) { [weak self] _ in
+            self?.pendingExplicitWheelScroll = true
         })
 
         observers.append(NotificationCenter.default.addObserver(
@@ -7926,6 +7945,10 @@ final class GhosttySurfaceScrollView: NSView {
         let wasVisible = surfaceView.isVisibleInUI
         surfaceView.setVisibleInUI(visible)
         isHidden = !visible
+        if wasVisible != visible, lastRequestedPortalOcclusionVisible != visible {
+            lastRequestedPortalOcclusionVisible = visible
+            surfaceView.terminalSurface?.setOcclusion(visible)
+        }
 #if DEBUG
         if wasVisible != visible {
             let transition = "\(wasVisible ? 1 : 0)->\(visible ? 1 : 0)"
@@ -9034,25 +9057,20 @@ final class GhosttySurfaceScrollView: NSView {
                     userScrolledAwayFromBottom = false
                 }
 
-                // Only auto-scroll if user hasn't manually scrolled away from bottom
-                // or if we're following terminal output (scrollbar shows we're at bottom)
-                let shouldAutoScroll = !userScrolledAwayFromBottom ||
-                    (scrollbar.offset + scrollbar.len >= scrollbar.total)
+                // Passive bottom packets should not override an explicit scrollback review,
+                // but the first scrollbar packet caused by the user's own wheel input should
+                // still move the viewport to the requested scrollback position.
+                let shouldAutoScroll = !userScrolledAwayFromBottom || allowExplicitScrollbarSync
 
                 if shouldAutoScroll && !pointApproximatelyEqual(currentOrigin, targetOrigin) {
-#if DEBUG
-                    logDragGeometryChange(
-                        event: "scrollOrigin",
-                        old: currentOrigin,
-                        new: targetOrigin
-                    )
-#endif
                     scrollView.contentView.scroll(to: targetOrigin)
                     didChangeGeometry = true
                 }
                 lastSentRow = Int(scrollbar.offset)
             }
         }
+
+        allowExplicitScrollbarSync = false
 
         if didChangeGeometry {
             scrollView.reflectScrolledClipView(scrollView.contentView)
@@ -9088,6 +9106,11 @@ final class GhosttySurfaceScrollView: NSView {
     private func handleScrollbarUpdate(_ notification: Notification) {
         guard let scrollbar = notification.userInfo?[GhosttyNotificationKey.scrollbar] as? GhosttyScrollbar else {
             return
+        }
+        if pendingExplicitWheelScroll {
+            userScrolledAwayFromBottom = scrollbar.offset + scrollbar.len < scrollbar.total
+            allowExplicitScrollbarSync = true
+            pendingExplicitWheelScroll = false
         }
         surfaceView.scrollbar = scrollbar
         synchronizeScrollView()
