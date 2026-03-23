@@ -238,6 +238,10 @@ class TerminalController {
     /// Next child index counter per parent
     private var claudeNextChildIndex: [UUID: Int] = [:]
 
+    // MARK: - Conductor Workspace Ownership
+    /// Workspace ID → Owner surface ID (conductor that created it)
+    private var conductorWorkspaceOwners: [UUID: UUID] = [:]
+
     /// Per-surface last key input timestamp (systemUptime).
     /// Used by `surface.is_typing` / `send --wait-idle` to detect user typing.
     private var lastKeyInputTimeBySurface: [UUID: TimeInterval] = [:]
@@ -2548,6 +2552,12 @@ class TerminalController {
         case "claude.respawn":
             return v2Result(id: id, self.v2ClaudeRespawn(params: params))
 
+        // Conductor child workspace management
+        case "conductor.child_workspace":
+            return v2Result(id: id, self.v2ConductorChildWorkspace(params: params))
+        case "conductor.child_workspaces":
+            return v2Result(id: id, self.v2ConductorChildWorkspaces(params: params))
+
 #if DEBUG
         // Debug / test-only
         case "debug.shortcut.set":
@@ -2679,6 +2689,8 @@ class TerminalController {
             "claude.parent",
             "claude.kill_child",
             "claude.respawn",
+            "conductor.child_workspace",
+            "conductor.child_workspaces",
             "surface.clear_history",
             "surface.trigger_flash",
             "surface.set_hook",
@@ -3708,6 +3720,10 @@ class TerminalController {
             }
         }
 
+        if found {
+            conductorWorkspaceOwners.removeValue(forKey: wsId)
+        }
+
         let windowId = v2ResolveWindowId(tabManager: tabManager)
         if protected {
             return .err(code: "protected", message: workspaceCloseProtectedMessage(), data: [
@@ -3857,6 +3873,89 @@ class TerminalController {
             "title": title
         ])
     }
+
+    // MARK: - Conductor child workspace management
+    private func v2ConductorChildWorkspace(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let ownerSurfaceId = v2UUID(params, "owner_surface_id") else {
+            return .err(code: "invalid_params", message: "Missing or invalid owner_surface_id", data: nil)
+        }
+
+        let cwd: String?
+        if let raw = v2RawString(params, "cwd")?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            cwd = raw
+        } else if let raw = v2RawString(params, "working_directory")?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            cwd = raw
+        } else {
+            cwd = nil
+        }
+        let title = v2RawString(params, "title")?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var newId: UUID?
+        v2MainSync {
+            let ws = tabManager.addWorkspace(
+                workingDirectory: cwd,
+                initialTerminalCommand: nil,
+                initialTerminalEnvironment: [:],
+                select: false,
+                eagerLoadTerminal: true
+            )
+            newId = ws.id
+            if let title, !title.isEmpty {
+                tabManager.setCustomTitle(tabId: ws.id, title: title)
+            }
+        }
+
+        guard let newId else {
+            return .err(code: "internal_error", message: "Failed to create workspace", data: nil)
+        }
+
+        conductorWorkspaceOwners[newId] = ownerSurfaceId
+
+        let windowId = v2ResolveWindowId(tabManager: tabManager)
+        return .ok([
+            "workspace_id": newId.uuidString,
+            "workspace_ref": v2Ref(kind: .workspace, uuid: newId),
+            "window_id": v2OrNull(windowId?.uuidString),
+            "window_ref": v2Ref(kind: .window, uuid: windowId),
+            "owner_surface_id": ownerSurfaceId.uuidString
+        ])
+    }
+
+    private func v2ConductorChildWorkspaces(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let ownerSurfaceId = v2UUID(params, "owner_surface_id") else {
+            return .err(code: "invalid_params", message: "Missing or invalid owner_surface_id", data: nil)
+        }
+
+        let ownedWsIds = conductorWorkspaceOwners.filter { $0.value == ownerSurfaceId }.map { $0.key }
+
+        var workspaces: [[String: Any]] = []
+        v2MainSync {
+            for wsId in ownedWsIds {
+                if let ws = tabManager.tabs.first(where: { $0.id == wsId }) {
+                    workspaces.append([
+                        "workspace_id": ws.id.uuidString,
+                        "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+                        "title": ws.customTitle ?? ws.title
+                    ])
+                }
+            }
+        }
+
+        let windowId = v2ResolveWindowId(tabManager: tabManager)
+        return .ok([
+            "owner_surface_id": ownerSurfaceId.uuidString,
+            "window_id": v2OrNull(windowId?.uuidString),
+            "window_ref": v2Ref(kind: .window, uuid: windowId),
+            "workspaces": workspaces
+        ])
+    }
+
     private func v2WorkspaceNext(params: [String: Any]) -> V2CallResult {
         guard let tabManager = v2ResolveTabManager(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
