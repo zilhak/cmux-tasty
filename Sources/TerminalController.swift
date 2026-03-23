@@ -3584,6 +3584,15 @@ class TerminalController {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
         }
 
+        let panelType = v2PanelType(params, "type") ?? .terminal
+        let markdownFile = v2String(params, "file")
+
+        if panelType == .markdown {
+            guard markdownFile != nil else {
+                return .err(code: "invalid_params", message: "Missing 'file' parameter for markdown type", data: nil)
+            }
+        }
+
         let requestedWorkingDirectory = v2RawString(params, "working_directory")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let workingDirectory = (requestedWorkingDirectory?.isEmpty == false) ? requestedWorkingDirectory : nil
 
@@ -3609,6 +3618,7 @@ class TerminalController {
         }
 
         var newId: UUID?
+        var markdownSurfaceId: UUID?
         let shouldFocus = v2FocusAllowed()
         v2MainSync {
             let ws = tabManager.addWorkspace(
@@ -3619,18 +3629,40 @@ class TerminalController {
                 eagerLoadTerminal: !shouldFocus
             )
             newId = ws.id
+
+            // For markdown type: add markdown split from initial terminal, then close the terminal
+            if panelType == .markdown, let filePath = markdownFile,
+               let initialPanelId = ws.focusedPanelId {
+                if let mdPanel = ws.newMarkdownSplit(
+                    from: initialPanelId,
+                    orientation: .horizontal,
+                    insertFirst: false,
+                    filePath: filePath,
+                    focus: true
+                ) {
+                    markdownSurfaceId = mdPanel.id
+                    // Close the initial terminal surface
+                    _ = ws.closePanel(initialPanelId, force: true)
+                }
+            }
         }
 
         guard let newId else {
             return .err(code: "internal_error", message: "Failed to create workspace", data: nil)
         }
         let windowId = v2ResolveWindowId(tabManager: tabManager)
-        return .ok([
+        var response: [String: Any] = [
             "window_id": v2OrNull(windowId?.uuidString),
             "window_ref": v2Ref(kind: .window, uuid: windowId),
             "workspace_id": newId.uuidString,
             "workspace_ref": v2Ref(kind: .workspace, uuid: newId)
-        ])
+        ]
+        if let mdId = markdownSurfaceId {
+            response["surface_id"] = mdId.uuidString
+            response["surface_ref"] = v2Ref(kind: .surface, uuid: mdId)
+            response["type"] = PanelType.markdown.rawValue
+        }
+        return .ok(response)
     }
     private func v2WorkspaceSelect(params: [String: Any]) -> V2CallResult {
         guard let tabManager = v2ResolveTabManager(params: params) else {
@@ -4753,11 +4785,15 @@ class TerminalController {
     // MARK: - V2 Surface Methods
 
     private func v2ResolveWorkspace(params: [String: Any], tabManager: TabManager) -> Workspace? {
+        // When surface_id is explicitly provided, find the workspace containing that surface first.
+        // This allows cross-workspace surface access without requiring --workspace.
+        if let surfaceId = v2UUID(params, "surface_id") ?? v2UUID(params, "tab_id") {
+            if let ws = tabManager.tabs.first(where: { $0.panels[surfaceId] != nil }) {
+                return ws
+            }
+        }
         if let wsId = v2UUID(params, "workspace_id") {
             return tabManager.tabs.first(where: { $0.id == wsId })
-        }
-        if let surfaceId = v2UUID(params, "surface_id") ?? v2UUID(params, "tab_id") {
-            return tabManager.tabs.first(where: { $0.panels[surfaceId] != nil })
         }
         guard let wsId = tabManager.selectedTabId else { return nil }
         return tabManager.tabs.first(where: { $0.id == wsId })
@@ -6364,8 +6400,12 @@ class TerminalController {
         // Step 7: Register hooks if on_idle == "notify-parent"
         if onIdle == "notify-parent" {
             let parentRef = v2MainSync { v2Ref(kind: .surface, uuid: parentSurfaceId) } as? String ?? parentSurfaceId.uuidString
-            let wsRef = v2MainSync { resolvedWs.map { v2Ref(kind: .workspace, uuid: $0.id) } as? String } ?? ""
-            let wsFlag = wsRef.isEmpty ? "" : " --workspace \(wsRef)"
+            // Use parent's workspace (not child's) so the send command can find the parent surface
+            let parentWsRef = v2MainSync {
+                let parentWs = tabManager.tabs.first(where: { $0.panels[parentSurfaceId] != nil })
+                return parentWs.map { v2Ref(kind: .workspace, uuid: $0.id) } as? String
+            } ?? ""
+            let wsFlag = parentWsRef.isEmpty ? "" : " --workspace \(parentWsRef)"
             // Use bundled CLI path for hook command (falls back to PATH cmux)
             let cliPath = Bundle.main.url(forResource: "cmux", withExtension: nil, subdirectory: "bin")?.path ?? "cmux"
 
@@ -6720,8 +6760,12 @@ class TerminalController {
         // Step 8: Register claude-idle hook if on_idle == "notify-parent"
         if onIdle == "notify-parent" {
             let parentRef = v2MainSync { v2Ref(kind: .surface, uuid: parentSurfaceId) } as? String ?? parentSurfaceId.uuidString
-            let wsRef = v2MainSync { resolvedWs.map { v2Ref(kind: .workspace, uuid: $0.id) } as? String } ?? ""
-            let wsFlag = wsRef.isEmpty ? "" : " --workspace \(wsRef)"
+            // Use parent's workspace (not child's) so the send command can find the parent surface
+            let parentWsRef = v2MainSync {
+                let parentWs = tabManager.tabs.first(where: { $0.panels[parentSurfaceId] != nil })
+                return parentWs.map { v2Ref(kind: .workspace, uuid: $0.id) } as? String
+            } ?? ""
+            let wsFlag = parentWsRef.isEmpty ? "" : " --workspace \(parentWsRef)"
             let cliPath = Bundle.main.url(forResource: "cmux", withExtension: nil, subdirectory: "bin")?.path ?? "cmux"
             let msg = "Child child:\(oldChildIndex) idle 전환됨. claude-children으로 상태를 점검하고 완료 여부를 판단하라."
             let hookCommand = "\(cliPath) send --surface \(parentRef)\(wsFlag) \"\(msg)\" && sleep 1 && \(cliPath) send --surface \(parentRef)\(wsFlag) '\\n' && \(cliPath) notify --title 'Worker Idle' --body 'child:\(oldChildIndex)'"

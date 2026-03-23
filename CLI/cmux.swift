@@ -1662,14 +1662,22 @@ struct CMUXCLI {
 
         case "new-workspace":
             let (commandOpt, rem0) = parseOption(commandArgs, name: "--command")
-            let (cwdOpt, remaining) = parseOption(rem0, name: "--cwd")
+            let (cwdOpt, rem1) = parseOption(rem0, name: "--cwd")
+            let (typeOpt, rem2) = parseOption(rem1, name: "--type")
+            let (fileOpt, remaining) = parseOption(rem2, name: "--file")
             if let unknown = remaining.first(where: { $0.hasPrefix("--") }) {
-                throw CLIError(message: "new-workspace: unknown flag '\(unknown)'. Known flags: --command <text>, --cwd <path>")
+                throw CLIError(message: "new-workspace: unknown flag '\(unknown)'. Known flags: --command <text>, --cwd <path>, --type <terminal|markdown>, --file <path>")
             }
             var params: [String: Any] = [:]
             if let cwdOpt {
                 let resolved = resolvePath(cwdOpt)
                 params["cwd"] = resolved
+            }
+            if let typeOpt {
+                params["type"] = typeOpt
+            }
+            if let fileOpt {
+                params["file"] = resolvePath(fileOpt)
             }
             let response = try client.sendV2(method: "workspace.create", params: params)
             let wsId = (response["workspace_ref"] as? String) ?? (response["workspace_id"] as? String) ?? ""
@@ -6882,18 +6890,21 @@ struct CMUXCLI {
             """
         case "new-workspace":
             return """
-            Usage: cmux new-workspace [--cwd <path>] [--command <text>]
+            Usage: cmux new-workspace [--cwd <path>] [--command <text>] [--type <terminal|markdown>] [--file <path>]
 
             Create a new workspace in the current window.
 
             Flags:
-              --cwd <path>      Set the working directory for the new workspace
-              --command <text>   Send text+Enter to the new workspace after creation
+              --cwd <path>                  Set the working directory for the new workspace
+              --command <text>              Send text+Enter to the new workspace after creation
+              --type <terminal|markdown>    Surface type (default: terminal)
+              --file <path>                 File path for markdown type (required when --type markdown)
 
             Example:
               cmux new-workspace
               cmux new-workspace --cwd ~/projects/myapp
               cmux new-workspace --cwd . --command "npm test"
+              cmux new-workspace --type markdown --file ./board.md
             """
         case "list-workspaces":
             return """
@@ -12277,7 +12288,7 @@ struct CMUXCLI {
           reorder-workspace --workspace <id|ref|index> (--index <n> | --before <id|ref|index> | --after <id|ref|index>) [--window <id|ref|index>]
           workspace-action --action <name> [--workspace <id|ref|index>] [--title <text>] [--color <#hex|name>]
           list-workspaces
-          new-workspace [--cwd <path>] [--command <text>]
+          new-workspace [--cwd <path>] [--command <text>] [--type <terminal|markdown>] [--file <path>]
           ssh <destination> [--name <title>] [--port <n>] [--identity <path>] [--ssh-option <opt>] [-- <remote-command-args>]
           remote-daemon-status [--os <darwin|linux>] [--arch <arm64|amd64>]
           new-split <left|right|up|down> [--workspace <id|ref>] [--surface <id|ref>] [--panel <id|ref>]
