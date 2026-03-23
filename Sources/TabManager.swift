@@ -3440,34 +3440,50 @@ class TabManager: ObservableObject {
         return tab.toggleSplitZoom(panelId: focusedPanelId)
     }
 
-    /// Extract columns from the split tree.
-    /// Horizontal splits separate columns, vertical splits add rows within a column.
-    /// Returns array of columns, each column is an array of pane UUIDs (top to bottom).
-    private func extractColumns(_ node: ExternalTreeNode) -> [[UUID]] {
+    /// Collect all leaf panels with their panel IDs and pixel frames from the tree.
+    private func collectLeafPanels(
+        _ node: ExternalTreeNode,
+        workspace: Workspace,
+        into result: inout [(panelId: UUID, frame: PixelRect)]
+    ) {
         switch node {
         case .pane(let paneNode):
-            guard let paneId = UUID(uuidString: paneNode.id) else { return [] }
-            return [[paneId]]
+            let tabIdStr = paneNode.selectedTabId ?? paneNode.tabs.first?.id
+            guard let tabIdStr,
+                  let tabUUID = UUID(uuidString: tabIdStr),
+                  let panelId = workspace.panelIdFromSurfaceId(TabID(uuid: tabUUID))
+            else { return }
+            result.append((panelId, paneNode.frame))
         case .split(let splitNode):
-            if splitNode.orientation == "horizontal" {
-                return extractColumns(splitNode.first) + extractColumns(splitNode.second)
-            } else {
-                // Vertical split: merge into single column
-                let firstPanes = extractColumns(splitNode.first).flatMap { $0 }
-                let secondPanes = extractColumns(splitNode.second).flatMap { $0 }
-                return [firstPanes + secondPanes]
-            }
+            collectLeafPanels(splitNode.first, workspace: workspace, into: &result)
+            collectLeafPanels(splitNode.second, workspace: workspace, into: &result)
         }
     }
 
     /// Determine the best split direction and target pane for a new child surface.
-    /// Uses grid heuristic: fills rows before adding columns.
+    /// Uses grid heuristic based on spatial layout: fills rows before adding columns.
     func bestSplitTargetForChild(tabId: UUID) -> (targetPanelId: UUID, direction: SplitDirection)? {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
         let tree = tab.bonsplitController.treeSnapshot()
-        let columns = extractColumns(tree)
 
-        guard !columns.isEmpty else { return nil }
+        var panes: [(panelId: UUID, frame: PixelRect)] = []
+        collectLeafPanels(tree, workspace: tab, into: &panes)
+
+        guard !panes.isEmpty else { return nil }
+
+        // Group panes into columns by x-position (tolerance for floating-point)
+        let sorted = panes.sorted { $0.frame.x < $1.frame.x }
+        var columns: [[(panelId: UUID, frame: PixelRect)]] = []
+        for pane in sorted {
+            if let lastCol = columns.last, let lastPane = lastCol.last,
+               abs(pane.frame.x - lastPane.frame.x) < 2 {
+                columns[columns.count - 1].append(pane)
+            } else {
+                columns.append([pane])
+            }
+        }
+        // Sort each column top-to-bottom by y
+        columns = columns.map { $0.sorted { $0.frame.y < $1.frame.y } }
 
         let cols = columns.count
         let maxRows = columns.map { $0.count }.max() ?? 1
@@ -3475,14 +3491,14 @@ class TabManager: ObservableObject {
 
         // Find a column with fewer rows than maxDim
         if let targetColumn = columns.first(where: { $0.count < maxDim }) {
-            if let targetPane = targetColumn.last {
-                return (targetPane, .down)
+            if let target = targetColumn.last {
+                return (target.panelId, .down)
             }
         }
 
         // All columns equal — add a new column by splitting rightmost pane right
-        if let lastColumn = columns.last, let targetPane = lastColumn.last {
-            return (targetPane, .right)
+        if let lastColumn = columns.last, let target = lastColumn.last {
+            return (target.panelId, .right)
         }
 
         return nil
