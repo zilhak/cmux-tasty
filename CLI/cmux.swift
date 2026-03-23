@@ -1869,12 +1869,36 @@ struct CMUXCLI {
 
         case "trigger-flash":
             let tfWsFlag = optionValue(commandArgs, name: "--workspace")
-            let workspaceArg = tfWsFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
-            let surfaceArg = optionValue(commandArgs, name: "--surface") ?? optionValue(commandArgs, name: "--panel") ?? (tfWsFlag == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            let explicitWorkspaceArg = tfWsFlag
+            let preferTTYFallback = windowId == nil && ProcessInfo.processInfo.environment["TMUX"] != nil
+            let callerWorkspaceArg = preferTTYFallback
+                ? nil
+                : (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let workspaceArg = explicitWorkspaceArg ?? callerWorkspaceArg
+            let explicitSurfaceArg = optionValue(commandArgs, name: "--surface") ?? optionValue(commandArgs, name: "--panel")
+            let callerSurfaceArg = explicitSurfaceArg == nil && preferTTYFallback == false && windowId == nil
+                ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+                : nil
+            let surfaceArg = explicitSurfaceArg ?? callerSurfaceArg
             var params: [String: Any] = [:]
-            let wsId = try normalizeWorkspaceHandle(workspaceArg, client: client)
+            let wsId = try {
+                if explicitWorkspaceArg != nil {
+                    return try normalizeWorkspaceHandle(workspaceArg, client: client)
+                }
+                return try resolveWorkspaceIdAllowingFallback(workspaceArg, client: client)
+            }()
             if let wsId { params["workspace_id"] = wsId }
-            let sfId = try normalizeSurfaceHandle(surfaceArg, client: client, workspaceHandle: wsId)
+            let sfId = try {
+                if explicitSurfaceArg != nil {
+                    return try normalizeSurfaceHandle(surfaceArg, client: client, workspaceHandle: wsId)
+                }
+                guard let wsId else { return nil }
+                return try resolveSurfaceIdAllowingFallback(
+                    surfaceArg,
+                    workspaceId: wsId,
+                    client: client
+                )
+            }()
             if let sfId { params["surface_id"] = sfId }
             let payload = try client.sendV2(method: "surface.trigger_flash", params: params)
             printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: v2OKSummary(payload, idFormat: idFormat))
@@ -2557,12 +2581,34 @@ struct CMUXCLI {
             let subtitle = optionValue(commandArgs, name: "--subtitle") ?? ""
             let body = optionValue(commandArgs, name: "--body") ?? ""
 
-            let notifyWsFlag = optionValue(commandArgs, name: "--workspace")
-            let workspaceArg = notifyWsFlag ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
-            let surfaceArg = optionValue(commandArgs, name: "--surface") ?? (notifyWsFlag == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            let explicitWorkspaceArg = optionValue(commandArgs, name: "--workspace")
+            let preferTTYFallback = windowId == nil && ProcessInfo.processInfo.environment["TMUX"] != nil
+            let callerWorkspaceArg = preferTTYFallback
+                ? nil
+                : (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let workspaceArg = explicitWorkspaceArg ?? callerWorkspaceArg
+            let explicitSurfaceArg = optionValue(commandArgs, name: "--surface")
+            let callerSurfaceArg = explicitSurfaceArg == nil && preferTTYFallback == false && windowId == nil
+                ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+                : nil
+            let surfaceArg = explicitSurfaceArg ?? callerSurfaceArg
 
-            let targetWorkspace = try resolveWorkspaceId(workspaceArg, client: client)
-            let targetSurface = try resolveSurfaceId(surfaceArg, workspaceId: targetWorkspace, client: client)
+            let targetWorkspace = try {
+                if explicitWorkspaceArg != nil {
+                    return try resolveWorkspaceId(workspaceArg, client: client)
+                }
+                return try resolveWorkspaceIdAllowingFallback(workspaceArg, client: client)
+            }()
+            let targetSurface = try {
+                if explicitSurfaceArg != nil {
+                    return try resolveSurfaceId(surfaceArg, workspaceId: targetWorkspace, client: client)
+                }
+                return try resolveSurfaceIdAllowingFallback(
+                    surfaceArg,
+                    workspaceId: targetWorkspace,
+                    client: client
+                )
+            }()
 
             let payload = "\(title)|\(subtitle)|\(body)"
             let response = try sendV1Command("notify_target \(targetWorkspace) \(targetSurface) \(payload)", client: client)
@@ -2853,7 +2899,8 @@ struct CMUXCLI {
         let (workspaceOpt, argsAfterWorkspace) = parseOption(args, name: "--workspace")
         let (windowOpt, argsAfterWindow) = parseOption(argsAfterWorkspace, name: "--window")
         let (surfaceOpt, argsAfterSurface) = parseOption(argsAfterWindow, name: "--surface")
-        args = argsAfterSurface
+        let (directionOpt, argsAfterDirection) = parseOption(argsAfterSurface, name: "--direction")
+        args = argsAfterDirection
 
         // Determine subcommand. Explicit "open" is supported, otherwise treat
         // a single positional argument as shorthand path.
@@ -2868,7 +2915,7 @@ struct CMUXCLI {
             if let first = args.first, first.hasPrefix("-") {
                 throw CLIError(
                     message:
-                        "markdown open: unknown flag '\(first)'. Usage: cmux markdown open <path> [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>]"
+                        "markdown open: unknown flag '\(first)'. Usage: cmux markdown open <path> [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--direction right|down|left|up]"
                 )
             } else if let first = args.first, looksLikePath(first) || first.contains(".") {
                 subArgs = args
@@ -2886,20 +2933,21 @@ struct CMUXCLI {
         if let unknownFlag = trailingArgs.first(where: { $0.hasPrefix("-") }) {
             throw CLIError(
                 message:
-                    "markdown open: unknown flag '\(unknownFlag)'. Usage: cmux markdown open <path> [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>]"
+                    "markdown open: unknown flag '\(unknownFlag)'. Usage: cmux markdown open <path> [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--direction right|down|left|up]"
             )
         }
         if let extraArg = trailingArgs.first {
             throw CLIError(
                 message:
-                    "markdown open: unexpected argument '\(extraArg)'. Usage: cmux markdown open <path> [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>]"
+                    "markdown open: unexpected argument '\(extraArg)'. Usage: cmux markdown open <path> [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--direction right|down|left|up]"
             )
         }
 
         let absolutePath = resolvePath(rawPath)
 
         // Build params
-        var params: [String: Any] = ["path": absolutePath]
+        let direction = directionOpt ?? "right"
+        var params: [String: Any] = ["path": absolutePath, "direction": direction]
         if let surfaceRaw = surfaceOpt {
             if let surface = try normalizeSurfaceHandle(surfaceRaw, client: client) {
                 params["surface_id"] = surface
@@ -4448,20 +4496,11 @@ struct CMUXCLI {
             "hash -r >/dev/null 2>&1 || true",
             "rehash >/dev/null 2>&1 || true",
         ])
-        let zshEnvLines = [
-            "[ -f \"$CMUX_REAL_ZDOTDIR/.zshenv\" ] && source \"$CMUX_REAL_ZDOTDIR/.zshenv\"",
-            "if [ -n \"${ZDOTDIR:-}\" ] && [ \"$ZDOTDIR\" != \"\(shellStateDir)\" ]; then export CMUX_REAL_ZDOTDIR=\"$ZDOTDIR\"; fi",
-            "export ZDOTDIR=\"\(shellStateDir)\"",
-        ]
-        let zshProfileLines = [
-            "[ -f \"$CMUX_REAL_ZDOTDIR/.zprofile\" ] && source \"$CMUX_REAL_ZDOTDIR/.zprofile\"",
-        ]
-        let zshRCLines = [
-            "[ -f \"$CMUX_REAL_ZDOTDIR/.zshrc\" ] && source \"$CMUX_REAL_ZDOTDIR/.zshrc\"",
-        ] + commonShellLines
-        let zshLoginLines = [
-            "[ -f \"$CMUX_REAL_ZDOTDIR/.zlogin\" ] && source \"$CMUX_REAL_ZDOTDIR/.zlogin\"",
-        ]
+        let zshBootstrap = RemoteRelayZshBootstrap(shellStateDir: shellStateDir)
+        let zshEnvLines = zshBootstrap.zshEnvLines
+        let zshProfileLines = zshBootstrap.zshProfileLines
+        let zshRCLines = zshBootstrap.zshRCLines(commonShellLines: commonShellLines)
+        let zshLoginLines = zshBootstrap.zshLoginLines
         let bashRCLines = [
             "if [ -f \"$HOME/.bash_profile\" ]; then . \"$HOME/.bash_profile\"; elif [ -f \"$HOME/.bash_login\" ]; then . \"$HOME/.bash_login\"; elif [ -f \"$HOME/.profile\" ]; then . \"$HOME/.profile\"; fi",
             "[ -f \"$HOME/.bashrc\" ] && . \"$HOME/.bashrc\"",
@@ -7857,11 +7896,13 @@ struct CMUXCLI {
               --workspace <id|ref|index>   Target workspace (default: $CMUX_WORKSPACE_ID)
               --surface <id|ref|index>     Source surface to split from (default: focused surface)
               --window <id|ref|index>      Target window
+              --direction <left|right|up|down>  Split direction (default: right)
 
             Examples:
               cmux markdown open plan.md
               cmux markdown ~/project/CHANGELOG.md
               cmux markdown open ./docs/design.md --workspace 0
+              cmux markdown open plan.md --direction down
             """
         default:
             return nil
@@ -10976,15 +11017,18 @@ struct CMUXCLI {
                 "has_surface_flag": optionValue(hookArgs, name: "--surface") != nil
             ]
         )
-        let fallbackWorkspaceId = try resolveWorkspaceIdForClaudeHook(workspaceArg, client: client)
-        let fallbackSurfaceId = try? resolveSurfaceId(surfaceArg, workspaceId: fallbackWorkspaceId, client: client)
 
         switch subcommand {
         case "session-start", "active":
             telemetry.breadcrumb("claude-hook.session-start")
-            let workspaceId = fallbackWorkspaceId
-            let surfaceId = try resolveSurfaceIdForClaudeHook(
-                surfaceArg,
+            let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                preferred: nil,
+                fallback: workspaceArg,
+                client: client
+            )
+            let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
+                preferred: nil,
+                fallback: surfaceArg,
                 workspaceId: workspaceId,
                 client: client
             )
@@ -11020,72 +11064,78 @@ struct CMUXCLI {
 
         case "stop", "idle":
             telemetry.breadcrumb("claude-hook.stop")
-            // Turn ended. Don't consume session or clear PID — Claude is still alive.
-            // Notification hook handles user-facing notifications; SessionEnd handles cleanup.
-            var workspaceId = fallbackWorkspaceId
-            var surfaceId = surfaceArg
-            if let sessionId = parsedInput.sessionId,
-               let mapped = try? sessionStore.lookup(sessionId: sessionId),
-               let mappedWorkspace = try? resolveWorkspaceIdForClaudeHook(mapped.workspaceId, client: client) {
-                workspaceId = mappedWorkspace
-                surfaceId = mapped.surfaceId
-            }
-
-            // Update session with transcript summary and send completion notification.
-            let completion = summarizeClaudeHookStop(
-                parsedInput: parsedInput,
-                sessionRecord: (try? sessionStore.lookup(sessionId: parsedInput.sessionId ?? ""))
-            )
-            if let sessionId = parsedInput.sessionId, let completion {
-                try? sessionStore.upsert(
-                    sessionId: sessionId,
-                    workspaceId: workspaceId,
-                    surfaceId: surfaceId ?? "",
-                    cwd: parsedInput.cwd,
-                    lastSubtitle: completion.subtitle,
-                    lastBody: completion.body
+            do {
+                // Turn ended. Don't consume session or clear PID — Claude is still alive.
+                // Notification hook handles user-facing notifications; SessionEnd handles cleanup.
+                let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+                let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                    preferred: mappedSession?.workspaceId,
+                    fallback: workspaceArg,
+                    client: client
                 )
-            }
-
-            if let completion {
-                let resolvedSurface = try resolveSurfaceIdForClaudeHook(
-                    surfaceId,
+                let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: mappedSession?.surfaceId,
+                    fallback: surfaceArg,
                     workspaceId: workspaceId,
                     client: client
                 )
-                let title = "Claude Code"
-                let subtitle = sanitizeNotificationField(completion.subtitle)
-                let body = sanitizeNotificationField(completion.body)
-                let payload = "\(title)|\(subtitle)|\(body)"
-                _ = try? sendV1Command("notify_target \(workspaceId) \(resolvedSurface) \(payload)", client: client)
-            }
 
-            try setClaudeStatus(
-                client: client,
-                workspaceId: workspaceId,
-                value: "Idle",
-                icon: "pause.circle.fill",
-                color: "#8E8E93"
-            )
+                // Update session with transcript summary and send completion notification.
+                let completion = summarizeClaudeHookStop(
+                    parsedInput: parsedInput,
+                    sessionRecord: mappedSession
+                )
+                if let sessionId = parsedInput.sessionId, let completion {
+                    try? sessionStore.upsert(
+                        sessionId: sessionId,
+                        workspaceId: workspaceId,
+                        surfaceId: surfaceId,
+                        cwd: parsedInput.cwd,
+                        lastSubtitle: completion.subtitle,
+                        lastBody: completion.body
+                    )
+                }
 
-            // Fire claude-idle surface hooks (used by conductor's --on-idle notify-parent)
-            if let surfaceId {
+                if let completion {
+                    let title = "Claude Code"
+                    let subtitle = sanitizeNotificationField(completion.subtitle)
+                    let body = sanitizeNotificationField(completion.body)
+                    let payload = "\(title)|\(subtitle)|\(body)"
+                    _ = try? sendV1Command("notify_target \(workspaceId) \(surfaceId) \(payload)", client: client)
+                }
+
+                try? setClaudeStatus(
+                    client: client,
+                    workspaceId: workspaceId,
+                    value: "Idle",
+                    icon: "pause.circle.fill",
+                    color: "#8E8E93"
+                )
+
+                // Fire claude-idle surface hooks (used by conductor's --on-idle notify-parent)
                 _ = try? client.sendV2(method: "surface.fire_hook", params: [
                     "surface_id": surfaceId,
                     "event": "claude-idle",
                 ])
-            }
 
-            print("OK")
+                print("OK")
+            } catch {
+                if shouldIgnoreClaudeHookTeardownError(error) {
+                    telemetry.breadcrumb("claude-hook.stop.ignored", data: ["error": String(describing: error)])
+                    print("OK")
+                    return
+                }
+                throw error
+            }
 
         case "prompt-submit":
             telemetry.breadcrumb("claude-hook.prompt-submit")
-            var workspaceId = fallbackWorkspaceId
-            if let sessionId = parsedInput.sessionId,
-               let mapped = try? sessionStore.lookup(sessionId: sessionId),
-               let mappedWorkspace = try? resolveWorkspaceIdForClaudeHook(mapped.workspaceId, client: client) {
-                workspaceId = mappedWorkspace
-            }
+            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+            let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                preferred: mappedSession?.workspaceId,
+                fallback: workspaceArg,
+                client: client
+            )
             _ = try sendV1Command("clear_notifications --tab=\(workspaceId)", client: client)
             try setClaudeStatus(
                 client: client,
@@ -11100,23 +11150,21 @@ struct CMUXCLI {
             telemetry.breadcrumb("claude-hook.notification")
             var summary = summarizeClaudeHookNotification(rawInput: rawInput)
 
-            var workspaceId = fallbackWorkspaceId
-            var preferredSurface = surfaceArg
-            if let sessionId = parsedInput.sessionId,
-               let mapped = try? sessionStore.lookup(sessionId: sessionId),
-               let mappedWorkspace = try? resolveWorkspaceIdForClaudeHook(mapped.workspaceId, client: client) {
-                workspaceId = mappedWorkspace
-                preferredSurface = mapped.surfaceId
-                // If PreToolUse saved a richer message (e.g. from AskUserQuestion),
-                // use it instead of the generic notification text.
-                if let savedBody = mapped.lastBody, !savedBody.isEmpty,
-                   summary.body.contains("needs your attention") || summary.body.contains("needs your input") {
-                    summary = (subtitle: mapped.lastSubtitle ?? summary.subtitle, body: savedBody)
-                }
+            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+            let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                preferred: mappedSession?.workspaceId,
+                fallback: workspaceArg,
+                client: client
+            )
+            if let mappedSession,
+               let savedBody = mappedSession.lastBody, !savedBody.isEmpty,
+               summary.body.contains("needs your attention") || summary.body.contains("needs your input") {
+                summary = (subtitle: mappedSession.lastSubtitle ?? summary.subtitle, body: savedBody)
             }
 
-            let surfaceId = try resolveSurfaceIdForClaudeHook(
-                preferredSurface,
+            let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
+                preferred: mappedSession?.surfaceId,
+                fallback: surfaceArg,
                 workspaceId: workspaceId,
                 client: client
             )
@@ -11153,6 +11201,21 @@ struct CMUXCLI {
             // Only clear when we are the primary cleanup path (Stop didn't fire first).
             // If Stop already consumed the session, consumedSession is nil and we skip
             // to avoid wiping the completion notification that Stop just delivered.
+            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+            let fallbackWorkspaceId = try? resolvePreferredWorkspaceIdForClaudeHook(
+                preferred: mappedSession?.workspaceId,
+                fallback: workspaceArg,
+                client: client
+            )
+            let fallbackSurfaceId: String? = {
+                guard let fallbackWorkspaceId else { return nil }
+                return try? resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: mappedSession?.surfaceId,
+                    fallback: surfaceArg,
+                    workspaceId: fallbackWorkspaceId,
+                    client: client
+                )
+            }()
             let consumedSession = try? sessionStore.consume(
                 sessionId: parsedInput.sessionId,
                 workspaceId: fallbackWorkspaceId,
@@ -11170,14 +11233,13 @@ struct CMUXCLI {
             telemetry.breadcrumb("claude-hook.pre-tool-use")
             // Clears "Needs input" status and notification when Claude resumes work
             // (e.g. after permission grant). Runs async so it doesn't block tool execution.
-            var workspaceId = fallbackWorkspaceId
-            var claudePid: Int? = nil
-            if let sessionId = parsedInput.sessionId,
-               let mapped = try? sessionStore.lookup(sessionId: sessionId),
-               let mappedWorkspace = try? resolveWorkspaceIdForClaudeHook(mapped.workspaceId, client: client) {
-                workspaceId = mappedWorkspace
-                claudePid = mapped.pid
-            }
+            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+            let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                preferred: mappedSession?.workspaceId,
+                fallback: workspaceArg,
+                client: client
+            )
+            let claudePid = mappedSession?.pid
 
             // AskUserQuestion means Claude is about to ask the user something.
             // Save question text in session so the Notification handler can use it
@@ -11252,6 +11314,70 @@ struct CMUXCLI {
 
     private func clearClaudeStatus(client: SocketClient, workspaceId: String) throws {
         _ = try client.send(command: "clear_status claude_code --tab=\(workspaceId)")
+    }
+
+    private func resolvePreferredWorkspaceIdForClaudeHook(
+        preferred: String?,
+        fallback: String?,
+        client: SocketClient
+    ) throws -> String {
+        if let preferred = nonEmptyClaudeHookIdentifier(preferred) {
+            if isUUID(preferred) {
+                return preferred
+            }
+            return try resolveWorkspaceIdForClaudeHook(preferred, client: client)
+        }
+        if let fallback = nonEmptyClaudeHookIdentifier(fallback), isUUID(fallback) {
+            return fallback
+        }
+        return try resolveWorkspaceIdForClaudeHook(fallback, client: client)
+    }
+
+    private func resolvePreferredSurfaceIdForClaudeHook(
+        preferred: String?,
+        fallback: String?,
+        workspaceId: String,
+        client: SocketClient
+    ) throws -> String {
+        if let preferred = nonEmptyClaudeHookIdentifier(preferred) {
+            if isUUID(preferred) {
+                return preferred
+            }
+            return try resolveSurfaceIdForClaudeHook(preferred, workspaceId: workspaceId, client: client)
+        }
+        if let fallback = nonEmptyClaudeHookIdentifier(fallback), isUUID(fallback) {
+            return fallback
+        }
+        return try resolveSurfaceIdForClaudeHook(fallback, workspaceId: workspaceId, client: client)
+    }
+
+    private func nonEmptyClaudeHookIdentifier(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func shouldIgnoreClaudeHookTeardownError(_ error: Error) -> Bool {
+        let message = String(describing: error).lowercased()
+        let benignFragments = [
+            "tabmanager not available",
+            "no workspace selected",
+            "workspace not found",
+            "workspace ref not found",
+            "workspace index not found",
+            "surface not found",
+            "surface ref not found",
+            "surface index not found",
+            "unable to resolve surface id",
+            "panel not found",
+            "tab not found",
+            "failed to write to socket",
+            "socket read error",
+            "not connected"
+        ]
+        return benignFragments.contains { message.contains($0) }
     }
 
     private func describeAskUserQuestion(_ object: [String: Any]?) -> String? {
@@ -11340,13 +11466,7 @@ struct CMUXCLI {
     }
 
     private func resolveWorkspaceIdForClaudeHook(_ raw: String?, client: SocketClient) throws -> String {
-        if let raw, !raw.isEmpty, let candidate = try? resolveWorkspaceId(raw, client: client) {
-            let probe = try? client.sendV2(method: "surface.list", params: ["workspace_id": candidate])
-            if probe != nil {
-                return candidate
-            }
-        }
-        return try resolveWorkspaceId(nil, client: client)
+        try resolveWorkspaceIdAllowingFallback(raw, client: client)
     }
 
     private func resolveSurfaceIdForClaudeHook(
@@ -11354,10 +11474,123 @@ struct CMUXCLI {
         workspaceId: String,
         client: SocketClient
     ) throws -> String {
-        if let raw, !raw.isEmpty, let candidate = try? resolveSurfaceId(raw, workspaceId: workspaceId, client: client) {
+        try resolveSurfaceIdAllowingFallback(raw, workspaceId: workspaceId, client: client)
+    }
+
+    private func resolveWorkspaceIdAllowingFallback(
+        _ raw: String?,
+        client: SocketClient
+    ) throws -> String {
+        if let raw,
+           !raw.isEmpty,
+           let candidate = try? resolveWorkspaceId(raw, client: client),
+           (try? client.sendV2(method: "surface.list", params: ["workspace_id": candidate])) != nil {
             return candidate
         }
+        if let callerWorkspaceId = resolveCallerWorkspaceIdByTTY(client: client),
+           (try? client.sendV2(method: "surface.list", params: ["workspace_id": callerWorkspaceId])) != nil {
+            return callerWorkspaceId
+        }
+        return try resolveWorkspaceId(nil, client: client)
+    }
+
+    private func resolveSurfaceIdAllowingFallback(
+        _ raw: String?,
+        workspaceId: String,
+        client: SocketClient
+    ) throws -> String {
+        if let raw,
+           !raw.isEmpty,
+           let candidate = try? resolveSurfaceId(raw, workspaceId: workspaceId, client: client),
+           let listed = try? client.sendV2(method: "surface.list", params: ["workspace_id": workspaceId]) {
+            let items = listed["surfaces"] as? [[String: Any]] ?? []
+            if items.contains(where: {
+                ($0["id"] as? String) == candidate || ($0["ref"] as? String) == candidate
+            }) {
+                return candidate
+            }
+        }
+        if let callerSurfaceId = resolveCallerSurfaceIdByTTY(workspaceId: workspaceId, client: client),
+           let listed = try? client.sendV2(method: "surface.list", params: ["workspace_id": workspaceId]) {
+            let items = listed["surfaces"] as? [[String: Any]] ?? []
+            if items.contains(where: {
+                ($0["id"] as? String) == callerSurfaceId || ($0["ref"] as? String) == callerSurfaceId
+            }) {
+                return callerSurfaceId
+            }
+        }
         return try resolveSurfaceId(nil, workspaceId: workspaceId, client: client)
+    }
+
+    private struct CallerTerminalBinding {
+        let workspaceId: String
+        let surfaceId: String
+    }
+
+    private func resolveCallerWorkspaceIdByTTY(client: SocketClient) -> String? {
+        resolveCallerTerminalBindingByTTY(client: client)?.workspaceId
+    }
+
+    private func resolveCallerSurfaceIdByTTY(workspaceId: String, client: SocketClient) -> String? {
+        guard let binding = resolveCallerTerminalBindingByTTY(client: client),
+              binding.workspaceId == workspaceId else {
+            return nil
+        }
+        return binding.surfaceId
+    }
+
+    private func resolveCallerTerminalBindingByTTY(client: SocketClient) -> CallerTerminalBinding? {
+        guard let ttyName = resolveCallerTTYName() else {
+            return nil
+        }
+        guard let payload = try? client.sendV2(method: "debug.terminals") else {
+            return nil
+        }
+        let terminals = payload["terminals"] as? [[String: Any]] ?? []
+        for terminal in terminals {
+            guard normalizedTTYName(terminal["tty"] as? String) == ttyName,
+                  let workspaceId = normalizedHandleValue(terminal["workspace_id"] as? String),
+                  let surfaceId = normalizedHandleValue(terminal["surface_id"] as? String) else {
+                continue
+            }
+            return CallerTerminalBinding(workspaceId: workspaceId, surfaceId: surfaceId)
+        }
+        return nil
+    }
+
+    private func resolveCallerTTYName() -> String? {
+        let env = ProcessInfo.processInfo.environment
+        for key in ["CMUX_CLI_TTY_NAME", "CMUX_TTY_NAME", "TTY", "SSH_TTY"] {
+            if let ttyName = normalizedTTYName(env[key]) {
+                return ttyName
+            }
+        }
+        for fileDescriptor in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] {
+            if let rawTTYName = ttyname(fileDescriptor),
+               let ttyName = normalizedTTYName(String(cString: rawTTYName)) {
+                return ttyName
+            }
+        }
+        return nil
+    }
+
+    private func normalizedTTYName(_ raw: String?) -> String? {
+        guard let trimmed = normalizedHandleValue(raw == "not a tty" ? nil : raw) else {
+            return nil
+        }
+        let components = trimmed.split(separator: "/")
+        if let last = components.last, !last.isEmpty {
+            return String(last)
+        }
+        return trimmed
+    }
+
+    private func normalizedHandleValue(_ raw: String?) -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return nil
+        }
+        return raw
     }
 
     private func parseClaudeHookInput(rawInput: String) -> ClaudeHookParsedInput {

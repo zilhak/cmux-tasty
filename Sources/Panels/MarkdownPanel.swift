@@ -78,7 +78,8 @@ final class MarkdownPanel: Panel, ObservableObject {
         stopDirectoryWatcher()
     }
 
-    func triggerFlash() {
+    func triggerFlash(reason: WorkspaceAttentionFlashReason) {
+        _ = reason
         guard NotificationPaneFlashSettings.isEnabled() else { return }
         focusFlashToken += 1
     }

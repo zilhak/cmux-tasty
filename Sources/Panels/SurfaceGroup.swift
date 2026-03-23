@@ -100,8 +100,8 @@ final class SurfaceGroup: Panel, ObservableObject {
         }
     }
 
-    func triggerFlash() {
-        focusedChild?.triggerFlash()
+    func triggerFlash(reason: WorkspaceAttentionFlashReason) {
+        focusedChild?.triggerFlash(reason: reason)
     }
 
     func captureFocusIntent(in window: NSWindow?) -> PanelFocusIntent {

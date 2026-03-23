@@ -167,6 +167,7 @@ struct cmuxApp: App {
     @AppStorage(KeyboardShortcutSettings.Action.prevSurface.defaultsKey) private var prevSurfaceShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.nextSidebarTab.defaultsKey) private var nextWorkspaceShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.prevSidebarTab.defaultsKey) private var prevWorkspaceShortcutData = Data()
+    @AppStorage(KeyboardShortcutSettings.Action.selectWorkspaceByNumber.defaultsKey) private var selectWorkspaceByNumberShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.splitRight.defaultsKey) private var splitRightShortcutData = Data()
     @AppStorage(KeyboardShortcutSettings.Action.splitDown.defaultsKey) private var splitDownShortcutData = Data()
     @AppStorage(BrowserToolbarAccessorySpacingDebugSettings.key) private var browserToolbarAccessorySpacingRaw = BrowserToolbarAccessorySpacingDebugSettings.defaultSpacing
@@ -821,16 +822,18 @@ struct cmuxApp: App {
 
                 Divider()
 
-                // Cmd+1 through Cmd+9 for workspace selection (9 = last workspace)
-                // When numberShortcutModifierSwapped is true, uses Ctrl instead of Cmd.
+                // Numbered workspace selection (9 = last workspace)
                 ForEach(1...9, id: \.self) { number in
                     Button(String(localized: "menu.view.workspace", defaultValue: "Workspace \(number)")) {
                         let manager = activeTabManager
-                        if let targetIndex = WorkspaceShortcutMapper.workspaceIndex(forCommandDigit: number, workspaceCount: manager.tabs.count) {
+                        if let targetIndex = WorkspaceShortcutMapper.workspaceIndex(forDigit: number, workspaceCount: manager.tabs.count) {
                             manager.selectTab(at: targetIndex)
                         }
                     }
-                    .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: numberShortcutModifierSwapped ? .control : .command)
+                    .keyboardShortcut(
+                        KeyEquivalent(Character("\(number)")),
+                        modifiers: selectWorkspaceByNumberMenuShortcut.eventModifiers
+                    )
                 }
 
                 Divider()
@@ -949,6 +952,13 @@ struct cmuxApp: App {
         decodeShortcut(
             from: prevWorkspaceShortcutData,
             fallback: KeyboardShortcutSettings.Action.prevSidebarTab.defaultShortcut
+        )
+    }
+
+    private var selectWorkspaceByNumberMenuShortcut: StoredShortcut {
+        decodeShortcut(
+            from: selectWorkspaceByNumberShortcutData,
+            fallback: KeyboardShortcutSettings.Action.selectWorkspaceByNumber.defaultShortcut
         )
     }
 
@@ -1098,21 +1108,21 @@ struct cmuxApp: App {
     private func closeOtherSelectedWorkspacePeers(in manager: TabManager) {
         guard let workspace = manager.selectedWorkspace else { return }
         let workspaceIds = manager.tabs.compactMap { $0.id == workspace.id ? nil : $0.id }
-        closeWorkspaceIds(workspaceIds, in: manager, allowPinned: false)
+        closeWorkspaceIds(workspaceIds, in: manager, allowPinned: true)
     }
 
     private func closeSelectedWorkspacesBelow(in manager: TabManager) {
         guard let workspace = manager.selectedWorkspace,
               let anchorIndex = selectedWorkspaceIndex(in: manager, workspaceId: workspace.id) else { return }
         let workspaceIds = manager.tabs.suffix(from: anchorIndex + 1).map(\.id)
-        closeWorkspaceIds(workspaceIds, in: manager, allowPinned: false)
+        closeWorkspaceIds(workspaceIds, in: manager, allowPinned: true)
     }
 
     private func closeSelectedWorkspacesAbove(in manager: TabManager) {
         guard let workspace = manager.selectedWorkspace,
               let anchorIndex = selectedWorkspaceIndex(in: manager, workspaceId: workspace.id) else { return }
         let workspaceIds = manager.tabs.prefix(upTo: anchorIndex).map(\.id)
-        closeWorkspaceIds(workspaceIds, in: manager, allowPinned: false)
+        closeWorkspaceIds(workspaceIds, in: manager, allowPinned: true)
     }
 
     private func selectedWorkspaceHasUnreadNotifications(in manager: TabManager) -> Bool {
@@ -6181,7 +6191,12 @@ struct ShortcutSettingRow: View {
     var body: some View {
         VStack(spacing: 6) {
             HStack {
-                KeyboardShortcutRecorder(label: action.label, shortcut: $shortcut)
+                KeyboardShortcutRecorder(
+                    label: action.label,
+                    shortcut: $shortcut,
+                    displayString: { action.displayedShortcutString(for: $0) },
+                    transformRecordedShortcut: { action.normalizedRecordedShortcut($0) }
+                )
                     .onChange(of: shortcut) { newValue in
                         KeyboardShortcutSettings.setShortcut(newValue, for: action)
                     }
