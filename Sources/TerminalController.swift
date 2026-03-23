@@ -6303,6 +6303,8 @@ class TerminalController {
             let shouldFocus = (params["focus"] as? Bool) ?? false
             if let nid = tabManager.newSplit(tabId: ws.id, surfaceId: splitTarget, direction: .right, focus: shouldFocus) {
                 newSurfaceId = nid
+                // Equalize all splits so children get equal space
+                tabManager.equalizeSplits(tabId: ws.id)
             }
         }
 

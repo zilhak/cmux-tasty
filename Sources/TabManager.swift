@@ -3411,6 +3411,7 @@ class TabManager: ObservableObject {
     }
 
     /// Equalize splits - not directly supported by bonsplit
+    @discardableResult
     func equalizeSplits(tabId: UUID) -> Bool {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return false }
 
@@ -3439,6 +3440,16 @@ class TabManager: ObservableObject {
         return tab.toggleSplitZoom(panelId: focusedPanelId)
     }
 
+    /// Count the number of leaf (pane) nodes in a tree.
+    private func leafCount(_ node: ExternalTreeNode) -> Int {
+        switch node {
+        case .pane:
+            return 1
+        case .split(let splitNode):
+            return leafCount(splitNode.first) + leafCount(splitNode.second)
+        }
+    }
+
     private func equalizeSplits(
         in node: ExternalTreeNode,
         controller: BonsplitController,
@@ -3455,7 +3466,13 @@ class TabManager: ObservableObject {
                 return
             }
 
-            if !controller.setDividerPosition(0.5, forSplit: splitId) {
+            // Proportional split: divider position based on leaf count ratio
+            let firstLeaves = leafCount(splitNode.first)
+            let secondLeaves = leafCount(splitNode.second)
+            let total = firstLeaves + secondLeaves
+            let position = CGFloat(firstLeaves) / CGFloat(total)
+
+            if !controller.setDividerPosition(position, forSplit: splitId) {
                 allSucceeded = false
             }
 
