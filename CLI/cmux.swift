@@ -2352,6 +2352,70 @@ struct CMUXCLI {
                 }
             }
 
+        case "claude-wait":
+            let (cwWsArg, cwRem0) = parseOption(commandArgs, name: "--workspace")
+            let (cwSfArg, cwRem1) = parseOption(cwRem0, name: "--surface")
+            let (cwTimeoutArg, cwRem2) = parseOption(cwRem1, name: "--timeout")
+
+            let cwWorkspaceArg = cwWsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+            let cwSurfaceArg = cwSfArg ?? (cwWsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
+            let cwWsId = try normalizeWorkspaceHandle(cwWorkspaceArg, client: client)
+            guard let cwSfId = try normalizeSurfaceHandle(cwSurfaceArg, client: client, workspaceHandle: cwWsId) else {
+                throw CLIError(message: "claude-wait requires --surface or CMUX_SURFACE_ID")
+            }
+
+            // Parse child:N target
+            guard let cwTarget = cwRem2.first(where: { !$0.hasPrefix("--") }),
+                  cwTarget.hasPrefix("child:"),
+                  let cwChildIdx = Int(cwTarget.dropFirst("child:".count)) else {
+                throw CLIError(message: "claude-wait requires a target (child:<N>)")
+            }
+
+            let cwTimeout: TimeInterval? = cwTimeoutArg.flatMap { Double($0) }
+            let cwStart = Date()
+
+            var cwParams: [String: Any] = ["surface_id": cwSfId]
+            if let cwWsId { cwParams["workspace_id"] = cwWsId }
+
+            // 폴링 루프
+            while true {
+                // timeout 체크
+                if let cwTimeout, Date().timeIntervalSince(cwStart) > cwTimeout {
+                    throw CLIError(message: "Timed out waiting for child:\(cwChildIdx)")
+                }
+
+                let cwPayload = try client.sendV2(method: "claude.children", params: cwParams)
+                let cwChildren = cwPayload["children"] as? [[String: Any]] ?? []
+
+                // child 찾기
+                let cwChild = cwChildren.first { intFromAny($0["index"]) == cwChildIdx }
+
+                if cwChild == nil {
+                    // child가 목록에 없음 = exited
+                    if jsonOutput {
+                        print(jsonString(["child_index": cwChildIdx, "state": "exited"] as [String: Any]))
+                    } else {
+                        print("OK child:\(cwChildIdx) exited")
+                    }
+                    break
+                }
+
+                let cwStatus = cwChild?["status"] as? [String: Any]
+                let cwState = cwStatus?["state"] as? String ?? "unknown"
+
+                if cwState == "idle" {
+                    if jsonOutput {
+                        print(jsonString(["child_index": cwChildIdx, "state": "idle"] as [String: Any]))
+                    } else {
+                        print("OK child:\(cwChildIdx) idle")
+                    }
+                    break
+                }
+
+                // 2초 대기 후 재폴링
+                Thread.sleep(forTimeInterval: 2.0)
+            }
+
         case "claude-kill":
             let (ckWsArg, ckRem0) = parseOption(commandArgs, name: "--workspace")
             let (ckSfArg, ckRem1) = parseOption(ckRem0, name: "--surface")
