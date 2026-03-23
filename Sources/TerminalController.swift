@@ -6299,9 +6299,18 @@ class TerminalController {
             resolvedWs = ws
             resolvedWindowId = v2ResolveWindowId(tabManager: tabManager)
 
-            // Split right from target surface. Default: no focus change.
+            // Determine optimal split direction and target using grid heuristic.
             let shouldFocus = (params["focus"] as? Bool) ?? false
-            if let nid = tabManager.newSplit(tabId: ws.id, surfaceId: splitTarget, direction: .right, focus: shouldFocus) {
+            let splitDirection: SplitDirection
+            let actualSplitTarget: UUID
+            if let best = tabManager.bestSplitTargetForChild(tabId: ws.id) {
+                splitDirection = best.direction
+                actualSplitTarget = best.targetPanelId
+            } else {
+                splitDirection = .right
+                actualSplitTarget = splitTarget
+            }
+            if let nid = tabManager.newSplit(tabId: ws.id, surfaceId: actualSplitTarget, direction: splitDirection, focus: shouldFocus) {
                 newSurfaceId = nid
                 // Equalize all splits so children get equal space
                 tabManager.equalizeSplits(tabId: ws.id)

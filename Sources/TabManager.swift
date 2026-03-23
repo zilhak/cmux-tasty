@@ -3440,6 +3440,54 @@ class TabManager: ObservableObject {
         return tab.toggleSplitZoom(panelId: focusedPanelId)
     }
 
+    /// Extract columns from the split tree.
+    /// Horizontal splits separate columns, vertical splits add rows within a column.
+    /// Returns array of columns, each column is an array of pane UUIDs (top to bottom).
+    private func extractColumns(_ node: ExternalTreeNode) -> [[UUID]] {
+        switch node {
+        case .pane(let paneNode):
+            guard let paneId = UUID(uuidString: paneNode.id) else { return [] }
+            return [[paneId]]
+        case .split(let splitNode):
+            if splitNode.orientation == "horizontal" {
+                return extractColumns(splitNode.first) + extractColumns(splitNode.second)
+            } else {
+                // Vertical split: merge into single column
+                let firstPanes = extractColumns(splitNode.first).flatMap { $0 }
+                let secondPanes = extractColumns(splitNode.second).flatMap { $0 }
+                return [firstPanes + secondPanes]
+            }
+        }
+    }
+
+    /// Determine the best split direction and target pane for a new child surface.
+    /// Uses grid heuristic: fills rows before adding columns.
+    func bestSplitTargetForChild(tabId: UUID) -> (targetPanelId: UUID, direction: SplitDirection)? {
+        guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
+        let tree = tab.bonsplitController.treeSnapshot()
+        let columns = extractColumns(tree)
+
+        guard !columns.isEmpty else { return nil }
+
+        let cols = columns.count
+        let maxRows = columns.map { $0.count }.max() ?? 1
+        let maxDim = max(cols, maxRows)
+
+        // Find a column with fewer rows than maxDim
+        if let targetColumn = columns.first(where: { $0.count < maxDim }) {
+            if let targetPane = targetColumn.last {
+                return (targetPane, .down)
+            }
+        }
+
+        // All columns equal — add a new column by splitting rightmost pane right
+        if let lastColumn = columns.last, let targetPane = lastColumn.last {
+            return (targetPane, .right)
+        }
+
+        return nil
+    }
+
     /// Count the number of leaf (pane) nodes in a tree.
     private func leafCount(_ node: ExternalTreeNode) -> Int {
         switch node {
