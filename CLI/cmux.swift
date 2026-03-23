@@ -2596,6 +2596,7 @@ struct CMUXCLI {
             let (mrFromArg, mrRem0) = parseOption(commandArgs, name: "--from")
             let mrWait = commandArgs.contains("--wait")
             let mrPeek = commandArgs.contains("--peek")
+            let mrBreakOnAllIdle = commandArgs.contains("--break-on-all-idle")
             let (mrTimeoutArg, _) = parseOption(mrRem0, name: "--timeout")
 
             let mrSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
@@ -2640,6 +2641,30 @@ struct CMUXCLI {
                         print("(no messages)")
                     }
                     break
+                }
+
+                // --break-on-all-idle: check if all children are idle with no messages
+                if mrBreakOnAllIdle {
+                    var childParams: [String: Any] = ["surface_id": mrSurface]
+                    if let mrWsId { childParams["workspace_id"] = mrWsId }
+                    if let childPayload = try? client.sendV2(method: "claude.children", params: childParams) {
+                        let children = childPayload["children"] as? [[String: Any]] ?? []
+                        if !children.isEmpty {
+                            let allIdle = children.allSatisfy { child in
+                                let status = child["status"] as? [String: Any]
+                                let state = status?["state"] as? String ?? "unknown"
+                                return state == "idle"
+                            }
+                            if allIdle {
+                                if jsonOutput {
+                                    print(jsonString(["messages": [] as [Any], "count": 0, "reason": "all_children_idle"]))
+                                } else {
+                                    print("(no messages — all children idle)")
+                                }
+                                break
+                            }
+                        }
+                    }
                 }
 
                 if let mrDeadline, Date() >= mrDeadline {
@@ -7891,20 +7916,23 @@ struct CMUXCLI {
             """
         case "message-read":
             return """
-            Usage: cmux message-read [--from <ref>] [--wait] [--peek] [--timeout <seconds>]
+            Usage: cmux message-read [--from <ref>] [--wait] [--peek] [--break-on-all-idle] [--timeout <seconds>]
 
             Read messages from the current surface's message queue.
 
             Flags:
-              --from <ref>       Filter by sender
-              --wait             Block until a message arrives (poll every 2s)
-              --peek             Read without removing from queue
-              --timeout <sec>    Max wait time (with --wait)
+              --from <ref>            Filter by sender
+              --wait                  Block until a message arrives (poll every 2s)
+              --peek                  Read without removing from queue
+              --break-on-all-idle     With --wait: stop waiting if all children are idle
+                                      and no messages. Prints "(no messages — all children idle)"
+              --timeout <sec>         Max wait time (with --wait)
 
             Example:
               cmux message-read
               cmux message-read --from child:1
               cmux message-read --wait --timeout 300
+              cmux message-read --wait --break-on-all-idle
             """
         case "message-count":
             return """
