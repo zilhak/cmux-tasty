@@ -1263,8 +1263,9 @@ class TerminalController {
         unlink(socketPathToUnlink)
     }
 
-    /// Find and SIGTERM all Claude processes that were spawned with cmux hooks.
+    /// Find and kill all Claude processes that were spawned with cmux hooks.
     /// These are identified by having "cmux claude-hook" in their command line.
+    /// Uses SIGKILL because orphaned Claude processes ignore SIGTERM.
     private nonisolated func killCmuxClaudeProcesses() {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
@@ -1277,10 +1278,12 @@ class TerminalController {
             task.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             if let output = String(data: data, encoding: .utf8) {
+                let myPid = ProcessInfo.processInfo.processIdentifier
                 let pids = output.split(separator: "\n")
                     .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+                    .filter { $0 != myPid } // don't kill ourselves
                 for pid in pids {
-                    kill(pid, SIGTERM)
+                    kill(pid, SIGKILL)
                 }
             }
         } catch {

@@ -95,7 +95,7 @@ _CMUX_SOCKET="${CMUX_SOCKET_PATH:-}"
 if [[ -n "$_CMUX_SOCKET" ]]; then
     (
         while sleep 10; do
-            [[ -S "$_CMUX_SOCKET" ]] || { kill $$ 2>/dev/null; exit 0; }
+            [[ -S "$_CMUX_SOCKET" ]] || { kill -9 $$ 2>/dev/null; exit 0; }
         done
     ) &
     _CMUX_WATCHDOG_PID=$!
