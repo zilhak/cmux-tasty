@@ -2675,6 +2675,43 @@ struct CMUXCLI {
                 print("OK cleared \(cleared) messages")
             }
 
+        case "claude-broadcast":
+            let (cbWaitIdleArg, cbRem_wi) = parseBoolOption(commandArgs, name: "--wait-idle")
+            let (cbFileArg, cbRem0) = parseOption(cbRem_wi, name: "--file")
+
+            let cbParentSurface = ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+            guard let cbParentSurface, !cbParentSurface.isEmpty else {
+                throw CLIError(message: "claude-broadcast requires CMUX_SURFACE_ID (run from inside a cmux terminal)")
+            }
+
+            var cbParams: [String: Any] = ["surface_id": cbParentSurface]
+            if let cbFileArg {
+                cbParams["file"] = resolvePath(cbFileArg)
+            } else {
+                let cbRawText = cbRem0.dropFirst(cbRem0.first == "--" ? 1 : 0).joined(separator: " ")
+                guard !cbRawText.isEmpty else { throw CLIError(message: "claude-broadcast requires text or --file") }
+                let cbText = unescapeSendText(cbRawText)
+                cbParams["text"] = cbText
+            }
+            if cbWaitIdleArg { cbParams["wait_idle"] = true }
+
+            let cbPayload = try client.sendV2(method: "claude.broadcast", params: cbParams)
+            if jsonOutput {
+                print(jsonString(cbPayload))
+            } else {
+                let sentCount = cbPayload["sent_count"] as? Int ?? 0
+                let totalChildren = cbPayload["total_children"] as? Int ?? 0
+                if let results = cbPayload["results"] as? [[String: Any]] {
+                    for r in results {
+                        let childIdx = r["child_index"] as? Int ?? 0
+                        let surfaceRef = r["surface_ref"] as? String ?? "?"
+                        let status = r["status"] as? String ?? "unknown"
+                        print("child:\(childIdx) \(surfaceRef) \(status)")
+                    }
+                }
+                print("OK \(sentCount)/\(totalChildren) sent")
+            }
+
         case "surface-hook":
             let shSubcommand = commandArgs.first ?? ""
             let shArgs = commandArgs.dropFirst().map { $0 }
@@ -7881,6 +7918,31 @@ struct CMUXCLI {
 
             Clear all messages in the current surface's message queue.
             """
+        case "claude-broadcast":
+            return """
+            Usage: cmux claude-broadcast [flags] <text>
+
+            Broadcast text to all Claude children of the current surface.
+            Sends the same text to every child terminal simultaneously.
+
+            Arguments:
+              <text>                 Text to broadcast (supports \\n for newlines)
+
+            Flags:
+              --file <path>          Read text from a file instead of arguments
+              --wait-idle            Queue text until each child is idle before sending
+
+            Output (plain):
+              child:1 surface:5 sent
+              child:2 surface:6 sent
+              OK 2/2 sent
+
+            Example:
+              cmux claude-broadcast "hello\\n"
+              cmux claude-broadcast --file /tmp/task.md
+              cmux claude-broadcast --wait-idle "do this next task\\n"
+              cmux claude-broadcast --json "status update\\n"
+            """
         case "surface-hook":
             return """
             Usage: cmux surface-hook <set|list|unset> [flags]
@@ -12650,6 +12712,7 @@ struct CMUXCLI {
           message-read [--from <ref>] [--wait] [--peek] [--timeout <seconds>]
           message-count
           message-clear
+          claude-broadcast [--file <path>] [--wait-idle] <text>
           surface-hook set --surface <ref> --event <event> --command <cmd> [--workspace <ref>]
           surface-hook list --surface <ref> [--event <event>] [--workspace <ref>]
           surface-hook unset --hook-id <uuid>

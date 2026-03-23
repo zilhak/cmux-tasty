@@ -2567,6 +2567,8 @@ class TerminalController {
             return v2Result(id: id, self.v2ClaudeRespawn(params: params))
         case "claude.set_idle_state":
             return v2Result(id: id, self.v2ClaudeSetIdleState(params: params))
+        case "claude.broadcast":
+            return v2Result(id: id, self.v2ClaudeBroadcast(params: params))
 
         // Claude child workspace management
         case "claude.child_workspace":
@@ -6661,6 +6663,110 @@ class TerminalController {
             "parent_surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
             "children": childrenResult,
             "count": childrenResult.count
+        ])
+    }
+
+    /// Broadcast text to all Claude children of a parent surface.
+    /// Supports two modes:
+    ///  - Terminal text injection (default): types text into each child terminal
+    ///  - Wait-idle mode (wait_idle=true): queues text until each child is idle
+    private func v2ClaudeBroadcast(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let parentSurfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+
+        // Read text from file or params
+        let text: String
+        if let filePath = params["file"] as? String {
+            guard let fileData = FileManager.default.contents(atPath: filePath),
+                  let fileText = String(data: fileData, encoding: .utf8) else {
+                return .err(code: "invalid_params", message: "Cannot read file: \(filePath)", data: nil)
+            }
+            text = fileText
+        } else if let t = params["text"] as? String {
+            text = t
+        } else {
+            return .err(code: "invalid_params", message: "Missing text or file", data: nil)
+        }
+
+        let waitIdle = (params["wait_idle"] as? Bool) == true
+
+        let children = claudeParentChildMap[parentSurfaceId] ?? []
+        if children.isEmpty {
+            return .ok([
+                "parent_surface_id": parentSurfaceId.uuidString,
+                "parent_surface_ref": v2Ref(kind: .surface, uuid: parentSurfaceId),
+                "results": [] as [[String: Any]],
+                "sent_count": 0,
+                "total_children": 0
+            ])
+        }
+
+        var results: [[String: Any]] = []
+        v2MainSync {
+            for entry in children {
+                let childId = entry.childSurfaceId
+                guard let ws = tabManager.tabs.first(where: { $0.panels[childId] != nil }),
+                      let terminalPanel = ws.terminalPanel(for: childId) else {
+                    results.append([
+                        "child_index": entry.index,
+                        "surface_id": childId.uuidString,
+                        "surface_ref": v2Ref(kind: .surface, uuid: childId),
+                        "status": "error",
+                        "error": "Surface not found or not a terminal"
+                    ])
+                    continue
+                }
+
+                if waitIdle {
+                    let hasPending = !(pendingSendQueue[childId]?.isEmpty ?? true)
+                    let idle = !hasPending && isTerminalSurfaceIdle(terminalPanel)
+                    if !idle {
+                        enqueuePendingSend(surfaceId: childId, text: text, tabManager: tabManager)
+                        results.append([
+                            "child_index": entry.index,
+                            "surface_id": childId.uuidString,
+                            "surface_ref": v2Ref(kind: .surface, uuid: childId),
+                            "status": "queued",
+                            "queue_depth": (pendingSendQueue[childId]?.count ?? 0)
+                        ])
+                        continue
+                    }
+                }
+
+                // Send text directly to terminal
+                if let surface = terminalPanel.surface.surface {
+                    sendSocketText(text, surface: surface)
+                    terminalPanel.surface.forceRefresh(reason: "terminalController.v2ClaudeBroadcast")
+                    results.append([
+                        "child_index": entry.index,
+                        "surface_id": childId.uuidString,
+                        "surface_ref": v2Ref(kind: .surface, uuid: childId),
+                        "status": "sent"
+                    ])
+                } else {
+                    terminalPanel.sendText(text)
+                    terminalPanel.surface.requestBackgroundSurfaceStartIfNeeded()
+                    results.append([
+                        "child_index": entry.index,
+                        "surface_id": childId.uuidString,
+                        "surface_ref": v2Ref(kind: .surface, uuid: childId),
+                        "status": "queued_pending_surface"
+                    ])
+                }
+            }
+        }
+
+        let sentCount = results.filter { ($0["status"] as? String) == "sent" }.count
+        return .ok([
+            "parent_surface_id": parentSurfaceId.uuidString,
+            "parent_surface_ref": v2Ref(kind: .surface, uuid: parentSurfaceId),
+            "results": results,
+            "sent_count": sentCount,
+            "total_children": children.count
         ])
     }
 
