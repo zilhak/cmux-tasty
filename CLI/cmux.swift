@@ -2160,6 +2160,57 @@ struct CMUXCLI {
 
             print("OK")
 
+        case "conductor-child-workspace":
+            let (cwCwdArg, cwRem0) = parseOption(commandArgs, name: "--cwd")
+            let (cwTitleArg, cwRem1) = parseOption(cwRem0, name: "--title")
+            let (cwOwnerArg, _) = parseOption(cwRem1, name: "--owner")
+
+            let cwOwnerSurface = cwOwnerArg ?? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+            guard let cwOwnerSurface, !cwOwnerSurface.isEmpty else {
+                throw CLIError(message: "conductor-child-workspace requires --owner or CMUX_SURFACE_ID")
+            }
+
+            var cwParams: [String: Any] = ["owner_surface_id": cwOwnerSurface]
+            if let cwCwdArg { cwParams["cwd"] = resolvePath(cwCwdArg) }
+            if let cwTitleArg { cwParams["title"] = cwTitleArg }
+
+            let cwPayload = try client.sendV2(method: "conductor.child_workspace", params: cwParams)
+            if jsonOutput {
+                print(jsonString(cwPayload))
+            } else {
+                let wsRef = cwPayload["workspace_ref"] as? String ?? "?"
+                let wsId = cwPayload["workspace_id"] as? String ?? "?"
+                print("OK \(wsRef) \(wsId)")
+            }
+
+        case "conductor-child-workspaces":
+            let (cwsOwnerArg, _) = parseOption(commandArgs, name: "--owner")
+
+            let cwsOwnerSurface = cwsOwnerArg ?? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+            guard let cwsOwnerSurface, !cwsOwnerSurface.isEmpty else {
+                throw CLIError(message: "conductor-child-workspaces requires --owner or CMUX_SURFACE_ID")
+            }
+
+            let cwsParams: [String: Any] = ["owner_surface_id": cwsOwnerSurface]
+            let cwsPayload = try client.sendV2(method: "conductor.child_workspaces", params: cwsParams)
+            if jsonOutput {
+                print(jsonString(cwsPayload))
+            } else {
+                guard let cwsWorkspaces = cwsPayload["workspaces"] as? [[String: Any]] else {
+                    print("No child workspaces")
+                    break
+                }
+                if cwsWorkspaces.isEmpty {
+                    print("No child workspaces")
+                    break
+                }
+                for ws in cwsWorkspaces {
+                    let ref = ws["workspace_ref"] as? String ?? "?"
+                    let title = ws["title"] as? String ?? ""
+                    print("\(ref) \(title)")
+                }
+            }
+
         case "claude-spawn":
             let (csFocusArg, csRem_f) = parseBoolOption(commandArgs, name: "--focus")
             let (csWsArg, csRem0) = parseOption(csRem_f, name: "--workspace")
