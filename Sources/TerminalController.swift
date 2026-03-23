@@ -206,6 +206,8 @@ class TerminalController {
         let timestamp: Date
     }
     private var surfaceActivitySnapshots: [UUID: SurfaceActivitySnapshot] = [:]
+    /// Hook-based idle state for Claude child surfaces (set via claude.set_idle_state)
+    private var claudeHookIdleState: [UUID: Bool] = [:]
 
     // MARK: - Wait-Idle Send Queue
     /// Queued text items waiting to be delivered when the target surface becomes idle.
@@ -2551,6 +2553,8 @@ class TerminalController {
             return v2Result(id: id, self.v2ClaudeKillChild(params: params))
         case "claude.respawn":
             return v2Result(id: id, self.v2ClaudeRespawn(params: params))
+        case "claude.set_idle_state":
+            return v2Result(id: id, self.v2ClaudeSetIdleState(params: params))
 
         // Conductor child workspace management
         case "conductor.child_workspace":
@@ -2689,6 +2693,7 @@ class TerminalController {
             "claude.parent",
             "claude.kill_child",
             "claude.respawn",
+            "claude.set_idle_state",
             "conductor.child_workspace",
             "conductor.child_workspaces",
             "surface.clear_history",
@@ -6435,6 +6440,17 @@ class TerminalController {
         return result
     }
 
+    private func v2ClaudeSetIdleState(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+        guard let idle = params["idle"] as? Bool else {
+            return .err(code: "invalid_params", message: "Missing idle (bool)", data: nil)
+        }
+        claudeHookIdleState[surfaceId] = idle
+        return .ok(["surface_id": surfaceId.uuidString, "idle": idle])
+    }
+
     private func v2ClaudeChildren(params: [String: Any]) -> V2CallResult {
         guard let tabManager = v2ResolveTabManager(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
@@ -6451,6 +6467,8 @@ class TerminalController {
                 let childId = entry.childSurfaceId
                 // Try to get claude-status info for the child
                 var status: [String: Any] = [:]
+                let isIdle = claudeHookIdleState[childId] == true
+
                 if let ws = tabManager.tabs.first(where: { $0.panels[childId] != nil }),
                    let tp = ws.terminalPanel(for: childId) {
                     let response = readTerminalTextBase64(terminalPanel: tp, includeScrollback: true)
@@ -6462,12 +6480,6 @@ class TerminalController {
                                 lines.removeLast()
                             }
                             if !lines.isEmpty { lines.removeLast() }
-                            let lastNonEmpty = lines.last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
-                            // Check if last non-empty line starts with ❯ (Claude Code prompt).
-                            // Using hasPrefix instead of contains to avoid false positives
-                            // from ❯ appearing in command output or tool results.
-                            let trimmedLast = lastNonEmpty?.trimmingCharacters(in: .whitespaces) ?? ""
-                            let isIdle = trimmedLast.hasPrefix("❯")
                             let contentLineCount = lines.count
                             let now = Date()
                             let prevSnapshot = surfaceActivitySnapshots[childId]
@@ -6491,6 +6503,15 @@ class TerminalController {
                             ]
                         }
                     }
+                }
+
+                // If we couldn't read terminal text but have hook state, still report it
+                if status.isEmpty && claudeHookIdleState[childId] != nil {
+                    status = [
+                        "state": isIdle ? "idle" : "busy",
+                        "seconds_since_change": 0,
+                        "last_lines": [] as [String]
+                    ]
                 }
 
                 childrenResult.append([
@@ -6572,6 +6593,7 @@ class TerminalController {
                 claudeParentChildMap.removeValue(forKey: parentSurfaceId)
             }
             claudeChildParentMap.removeValue(forKey: childSurfaceId)
+            claudeHookIdleState.removeValue(forKey: childSurfaceId)
 
             // Clean up hooks
             SurfaceHookManager.shared.removeAllHooks(surfaceId: childSurfaceId)
@@ -6761,10 +6783,14 @@ class TerminalController {
 
     /// Clean up claude parent-child relationships when a surface is closed.
     private func claudeCleanupOnSurfaceClose(_ surfaceId: UUID) {
+        // Clean up hook idle state
+        claudeHookIdleState.removeValue(forKey: surfaceId)
+
         // If this surface was a parent, remove all children's parent references
         if let children = claudeParentChildMap.removeValue(forKey: surfaceId) {
             for child in children {
                 claudeChildParentMap.removeValue(forKey: child.childSurfaceId)
+                claudeHookIdleState.removeValue(forKey: child.childSurfaceId)
             }
             claudeNextChildIndex.removeValue(forKey: surfaceId)
         }

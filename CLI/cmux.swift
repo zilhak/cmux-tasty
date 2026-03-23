@@ -11197,6 +11197,11 @@ struct CMUXCLI {
                     client: client
                 )
             }
+            // Clear claude idle state for this surface
+            _ = try? client.sendV2(method: "claude.set_idle_state", params: [
+                "surface_id": surfaceId,
+                "idle": false,
+            ])
             print("OK")
 
         case "stop", "idle":
@@ -11249,6 +11254,12 @@ struct CMUXCLI {
                     color: "#8E8E93"
                 )
 
+                // Set hook-based idle state for claude-wait detection
+                _ = try? client.sendV2(method: "claude.set_idle_state", params: [
+                    "surface_id": surfaceId,
+                    "idle": true,
+                ])
+
                 // Fire claude-idle surface hooks (for manually registered hooks)
                 _ = try? client.sendV2(method: "surface.fire_hook", params: [
                     "surface_id": surfaceId,
@@ -11273,7 +11284,18 @@ struct CMUXCLI {
                 fallback: workspaceArg,
                 client: client
             )
+            let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
+                preferred: mappedSession?.surfaceId,
+                fallback: surfaceArg,
+                workspaceId: workspaceId,
+                client: client
+            )
             _ = try sendV1Command("clear_notifications --tab=\(workspaceId)", client: client)
+            // Clear claude idle state
+            _ = try? client.sendV2(method: "claude.set_idle_state", params: [
+                "surface_id": surfaceId,
+                "idle": false,
+            ])
             try setClaudeStatus(
                 client: client,
                 workspaceId: workspaceId,
