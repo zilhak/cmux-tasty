@@ -237,6 +237,8 @@ class TerminalController {
     private var claudeParentChildMap: [UUID: [ClaudeChildEntry]] = [:]
     /// Child surface ID → Parent surface ID (reverse lookup)
     private var claudeChildParentMap: [UUID: UUID] = [:]
+    /// Parent surface IDs whose surface has been closed but still have live children
+    private var claudeClosedParentIds: Set<UUID> = []
     /// Next child index counter per parent
     private var claudeNextChildIndex: [UUID: Int] = [:]
 
@@ -6653,12 +6655,14 @@ class TerminalController {
             ])
         }
 
+        let parentClosed = claudeClosedParentIds.contains(parentId)
         return .ok([
             "surface_id": surfaceId.uuidString,
             "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
             "parent": [
                 "surface_id": parentId.uuidString,
-                "surface_ref": v2Ref(kind: .surface, uuid: parentId)
+                "surface_ref": v2Ref(kind: .surface, uuid: parentId),
+                "status": parentClosed ? "closed" : "active"
             ]
         ])
     }
@@ -6698,6 +6702,8 @@ class TerminalController {
             claudeParentChildMap[parentSurfaceId]?.removeAll(where: { $0.childSurfaceId == childSurfaceId })
             if claudeParentChildMap[parentSurfaceId]?.isEmpty == true {
                 claudeParentChildMap.removeValue(forKey: parentSurfaceId)
+                claudeClosedParentIds.remove(parentSurfaceId)
+                claudeNextChildIndex.removeValue(forKey: parentSurfaceId)
             }
             claudeChildParentMap.removeValue(forKey: childSurfaceId)
             claudeHookIdleState.removeValue(forKey: childSurfaceId)
@@ -6893,12 +6899,12 @@ class TerminalController {
         // Clean up hook idle state
         claudeHookIdleState.removeValue(forKey: surfaceId)
 
-        // If this surface was a parent, remove all children's parent references
-        if let children = claudeParentChildMap.removeValue(forKey: surfaceId) {
-            for child in children {
-                claudeChildParentMap.removeValue(forKey: child.childSurfaceId)
-                claudeHookIdleState.removeValue(forKey: child.childSurfaceId)
-            }
+        // If this surface was a parent, mark as closed but keep maps so children can still be managed
+        if let children = claudeParentChildMap[surfaceId], !children.isEmpty {
+            claudeClosedParentIds.insert(surfaceId)
+        } else {
+            // No children — clean up completely
+            claudeParentChildMap.removeValue(forKey: surfaceId)
             claudeNextChildIndex.removeValue(forKey: surfaceId)
         }
 
@@ -6907,6 +6913,8 @@ class TerminalController {
             claudeParentChildMap[parentId]?.removeAll(where: { $0.childSurfaceId == surfaceId })
             if claudeParentChildMap[parentId]?.isEmpty == true {
                 claudeParentChildMap.removeValue(forKey: parentId)
+                claudeClosedParentIds.remove(parentId)
+                claudeNextChildIndex.removeValue(forKey: parentId)
             }
         }
     }
