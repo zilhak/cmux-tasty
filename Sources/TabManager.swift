@@ -953,6 +953,16 @@ class TabManager: ObservableObject {
         workspace.onClosedBrowserPanel = nil
     }
 
+    private func wireClaudeCleanupTracking(for workspace: Workspace) {
+        workspace.onPanelClosed = { surfaceId in
+            TerminalController.shared.claudeCleanupOnSurfaceClose(surfaceId)
+        }
+    }
+
+    private func unwireClaudeCleanupTracking(for workspace: Workspace) {
+        workspace.onPanelClosed = nil
+    }
+
     var selectedWorkspace: Workspace? {
         guard let selectedTabId else { return nil }
         return tabs.first(where: { $0.id == selectedTabId })
@@ -1082,6 +1092,7 @@ class TabManager: ObservableObject {
         )
         newWorkspace.owningTabManager = self
         wireClosedBrowserTracking(for: newWorkspace)
+        wireClaudeCleanupTracking(for: newWorkspace)
         let insertIndex = newTabInsertIndex(snapshot: snapshot, placementOverride: placementOverride)
         if eagerLoadTerminal && !select {
             requestBackgroundWorkspaceLoad(for: newWorkspace.id)
@@ -2219,6 +2230,7 @@ class TabManager: ObservableObject {
         workspace.teardownAllPanels()
         workspace.teardownRemoteConnection()
         unwireClosedBrowserTracking(for: workspace)
+        unwireClaudeCleanupTracking(for: workspace)
         workspace.owningTabManager = nil
 
         if let index = tabs.firstIndex(where: { $0.id == workspace.id }) {
@@ -2244,6 +2256,7 @@ class TabManager: ObservableObject {
 
         let removed = tabs.remove(at: index)
         unwireClosedBrowserTracking(for: removed)
+        unwireClaudeCleanupTracking(for: removed)
         removed.owningTabManager = nil
         lastFocusedPanelByTab.removeValue(forKey: removed.id)
 
@@ -2265,6 +2278,7 @@ class TabManager: ObservableObject {
     func attachWorkspace(_ workspace: Workspace, at index: Int? = nil, select: Bool = true) {
         workspace.owningTabManager = self
         wireClosedBrowserTracking(for: workspace)
+        wireClaudeCleanupTracking(for: workspace)
         let insertIndex: Int = {
             guard let index else { return tabs.count }
             return max(0, min(index, tabs.count))
@@ -5130,6 +5144,7 @@ extension TabManager {
     func restoreSessionSnapshot(_ snapshot: SessionTabManagerSnapshot) {
         for tab in tabs {
             unwireClosedBrowserTracking(for: tab)
+            unwireClaudeCleanupTracking(for: tab)
         }
         let existingProbeKeys = Set(workspaceGitProbeGenerationByKey.keys)
             .union(workspaceGitProbeTimersByKey.keys)
@@ -5167,6 +5182,7 @@ extension TabManager {
             workspace.owningTabManager = self
             workspace.restoreSessionSnapshot(workspaceSnapshot)
             wireClosedBrowserTracking(for: workspace)
+            wireClaudeCleanupTracking(for: workspace)
             newTabs.append(workspace)
         }
 
@@ -5176,6 +5192,7 @@ extension TabManager {
             let fallback = Workspace(title: "Terminal 1", portOrdinal: ordinal)
             fallback.owningTabManager = self
             wireClosedBrowserTracking(for: fallback)
+            wireClaudeCleanupTracking(for: fallback)
             newTabs.append(fallback)
         }
 
