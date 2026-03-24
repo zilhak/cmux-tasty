@@ -5180,6 +5180,9 @@ final class Workspace: Identifiable, ObservableObject {
 
     /// Callback used by TabManager to capture recently closed browser panels for Cmd+Shift+T restore.
     var onClosedBrowserPanel: ((ClosedBrowserPanelRestoreSnapshot) -> Void)?
+
+    /// Callback used by TabManager to clean up claude child registry when a panel is closed via UI.
+    var onPanelClosed: ((UUID) -> Void)?
     weak var owningTabManager: TabManager?
 
 
@@ -10049,6 +10052,7 @@ extension Workspace: BonsplitDelegate {
            let surfaceGroup = panels[panelId] as? SurfaceGroup {
             // Clean up each child terminal from panels and subsidiary dictionaries.
             for child in surfaceGroup.allChildPanels {
+                onPanelClosed?(child.id)
                 child.close()
                 panels.removeValue(forKey: child.id)
                 untrackRemoteTerminalSurface(child.id)
@@ -10126,6 +10130,7 @@ extension Workspace: BonsplitDelegate {
                     : nil
             )
         } else {
+            onPanelClosed?(panelId)
             if let closedBrowserRestoreSnapshot {
                 onClosedBrowserPanel?(closedBrowserRestoreSnapshot)
             }

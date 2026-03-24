@@ -7060,7 +7060,7 @@ class TerminalController {
     }
 
     /// Clean up claude parent-child relationships when a surface is closed.
-    private func claudeCleanupOnSurfaceClose(_ surfaceId: UUID) {
+    func claudeCleanupOnSurfaceClose(_ surfaceId: UUID) {
         // Clean up hook idle state
         claudeHookIdleState.removeValue(forKey: surfaceId)
 
