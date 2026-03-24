@@ -106,6 +106,18 @@ Parent Claude가 worktree를 생성할 때, 아래 디렉토리는 수정 대상
 3. 태그 생성: `git tag v{tasty}-from-{upstream}`
 4. GitHub Release 생성: `gh release create` 로 zip 업로드
 
+## 설정 페이지 (Settings) 관리 정책
+
+설정 화면은 두 곳에 존재한다:
+
+- **Origin 설정** (`Sources/cmuxApp.swift`의 `SettingsView`) — upstream 원본 설정 화면. conflict 방지를 위해 보존만 하며, tasty 고유 기능의 설정을 여기에 추가할 필요는 없다.
+- **Tasty 설정** (`Sources/TastySettingsView.swift`) — 실제 사용하는 설정 화면. 각 섹션이 별도 struct로 분리되어 있다 (General, Appearance, Sidebar, Behavior, Browser, Automation, Shortcuts 등).
+
+**규칙:**
+- **Origin에 있는 모든 설정은 Tasty에도 있어야 한다.** Upstream sync 후 Origin에 새 설정이 추가되었다면, Tasty 설정에도 동일한 `@AppStorage` 키와 UI를 추가해야 한다.
+- **Tasty에만 있는 설정은 OK.** Fork 고유 기능의 설정은 Tasty에만 존재해도 된다.
+- 양쪽 모두 같은 `@AppStorage` 키(UserDefaults 키)를 사용해야 설정 값이 공유된다.
+
 ## 작업 문서화
 
 작업이 완료되면, 어떤 작업이 수행되었는지에 대해 `docs/tasty/` 하위에 문서를 작성합니다.
