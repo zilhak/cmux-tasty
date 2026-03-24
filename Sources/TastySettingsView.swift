@@ -822,9 +822,15 @@ struct TastyBrowserSettingsSection: View {
     @AppStorage(BrowserLinkOpenSettings.browserHostWhitelistKey) private var browserHostWhitelist = BrowserLinkOpenSettings.defaultBrowserHostWhitelist
     @AppStorage(BrowserLinkOpenSettings.browserExternalOpenPatternsKey)
     private var browserExternalOpenPatterns = BrowserLinkOpenSettings.defaultBrowserExternalOpenPatterns
+    @AppStorage(BrowserInsecureHTTPSettings.allowlistKey) private var browserInsecureHTTPAllowlist = BrowserInsecureHTTPSettings.defaultAllowlistText
+    @AppStorage(BrowserImportHintSettings.variantKey) private var browserImportHintVariantRaw = BrowserImportHintSettings.defaultVariant.rawValue
+    @AppStorage(BrowserImportHintSettings.showOnBlankTabsKey) private var showBrowserImportHintOnBlankTabs = BrowserImportHintSettings.defaultShowOnBlankTabs
+    @AppStorage(BrowserImportHintSettings.dismissedKey) private var isBrowserImportHintDismissed = BrowserImportHintSettings.defaultDismissed
 
     @State private var browserHistoryEntryCount: Int = 0
     @State private var showClearBrowserHistoryConfirmation = false
+    @State private var detectedImportBrowsers: [InstalledBrowserCandidate] = []
+    @State private var browserInsecureHTTPAllowlistDraft = BrowserInsecureHTTPSettings.defaultAllowlistText
 
     private var selectedBrowserThemeMode: BrowserThemeMode {
         BrowserThemeSettings.mode(for: browserThemeMode)
@@ -835,6 +841,49 @@ struct TastyBrowserSettingsSection: View {
             get: { browserThemeMode },
             set: { browserThemeMode = BrowserThemeSettings.mode(for: $0).rawValue }
         )
+    }
+
+    private var browserImportHintVariant: BrowserImportHintVariant {
+        BrowserImportHintSettings.variant(for: browserImportHintVariantRaw)
+    }
+
+    private var browserImportHintPresentation: BrowserImportHintPresentation {
+        BrowserImportHintPresentation(
+            variant: browserImportHintVariant,
+            showOnBlankTabs: showBrowserImportHintOnBlankTabs,
+            isDismissed: isBrowserImportHintDismissed
+        )
+    }
+
+    private var browserImportHintVisibilityBinding: Binding<Bool> {
+        Binding(
+            get: { showBrowserImportHintOnBlankTabs },
+            set: { newValue in
+                showBrowserImportHintOnBlankTabs = newValue
+                if newValue {
+                    isBrowserImportHintDismissed = false
+                }
+            }
+        )
+    }
+
+    private var browserImportSubtitle: String {
+        InstalledBrowserDetector.summaryText(for: detectedImportBrowsers)
+    }
+
+    private var browserImportHintSettingsNote: String {
+        switch browserImportHintPresentation.settingsStatus {
+        case .visible:
+            return String(localized: "settings.browser.import.hint.note.visible", defaultValue: "Blank browser tabs can show this import suggestion. Hide or re-enable it here.")
+        case .hidden:
+            return String(localized: "settings.browser.import.hint.note.hidden", defaultValue: "The blank-tab import hint is hidden. Turn it back on here any time.")
+        case .settingsOnly:
+            return String(localized: "settings.browser.import.hint.note.settingsOnly", defaultValue: "Blank tabs are currently using Settings only mode from the debug window.")
+        }
+    }
+
+    private var browserInsecureHTTPAllowlistHasUnsavedChanges: Bool {
+        browserInsecureHTTPAllowlistDraft != browserInsecureHTTPAllowlist
     }
 
     var body: some View {
@@ -942,6 +991,131 @@ struct TastyBrowserSettingsSection: View {
 
             SettingsCardDivider()
 
+            VStack(alignment: .leading, spacing: 8) {
+                Text(String(localized: "settings.browser.httpAllowlist", defaultValue: "HTTP Hosts Allowed in Embedded Browser"))
+                    .font(.system(size: 13, weight: .semibold))
+
+                Text(String(localized: "settings.browser.httpAllowlist.description", defaultValue: "Controls which HTTP (non-HTTPS) hosts can open in cmux without a warning prompt. Defaults include localhost, 127.0.0.1, ::1, 0.0.0.0, and *.localtest.me."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                TextEditor(text: $browserInsecureHTTPAllowlistDraft)
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .frame(minHeight: 86)
+                    .padding(6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                    )
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: 10) {
+                        Text(String(localized: "settings.browser.httpAllowlist.hint", defaultValue: "One host or wildcard per line (for example: localhost, 127.0.0.1, ::1, 0.0.0.0, *.localtest.me)."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Spacer(minLength: 0)
+
+                        Button(String(localized: "settings.browser.httpAllowlist.save", defaultValue: "Save")) {
+                            saveBrowserInsecureHTTPAllowlist()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(!browserInsecureHTTPAllowlistHasUnsavedChanges)
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(String(localized: "settings.browser.httpAllowlist.hint", defaultValue: "One host or wildcard per line (for example: localhost, 127.0.0.1, ::1, 0.0.0.0, *.localtest.me)."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        HStack {
+                            Spacer(minLength: 0)
+                            Button(String(localized: "settings.browser.httpAllowlist.save", defaultValue: "Save")) {
+                                saveBrowserInsecureHTTPAllowlist()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(!browserInsecureHTTPAllowlistHasUnsavedChanges)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            SettingsCardDivider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(String(localized: "settings.browser.import", defaultValue: "Import Browser Data"))
+                        .font(.system(size: 13, weight: .semibold))
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(String(localized: "browser.import.hint.title", defaultValue: "Import browser data"))
+                            .font(.system(size: 12.5, weight: .semibold))
+
+                        Text(browserImportSubtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Text(String(localized: "browser.import.hint.settingsFootnote", defaultValue: "You can always find this in Settings > Browser."))
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.tertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 1)
+                    )
+                }
+
+                HStack(spacing: 8) {
+                    Button(String(localized: "settings.browser.import.choose", defaultValue: "Choose…")) {
+                        DispatchQueue.main.async {
+                            BrowserDataImportCoordinator.shared.presentImportDialog()
+                            refreshDetectedImportBrowsers()
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Button(String(localized: "settings.browser.import.refresh", defaultValue: "Refresh")) {
+                        refreshDetectedImportBrowsers()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                Toggle(
+                    String(localized: "settings.browser.import.hint.show", defaultValue: "Show import hint on blank browser tabs"),
+                    isOn: browserImportHintVisibilityBinding
+                )
+                .controlSize(.small)
+
+                Text(browserImportHintSettingsNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            SettingsCardDivider()
+
             SettingsCardRow(String(localized: "settings.browser.history", defaultValue: "Browsing History")) {
                 Button(String(localized: "settings.browser.history.clearButton", defaultValue: "Clear History…")) {
                     showClearBrowserHistoryConfirmation = true
@@ -955,6 +1129,14 @@ struct TastyBrowserSettingsSection: View {
             BrowserHistoryStore.shared.loadIfNeeded()
             browserThemeMode = BrowserThemeSettings.mode(defaults: .standard).rawValue
             browserHistoryEntryCount = BrowserHistoryStore.shared.entries.count
+            browserInsecureHTTPAllowlistDraft = browserInsecureHTTPAllowlist
+            browserImportHintVariantRaw = BrowserImportHintSettings.variant(for: browserImportHintVariantRaw).rawValue
+            refreshDetectedImportBrowsers()
+        }
+        .onChange(of: browserInsecureHTTPAllowlist) { oldValue, newValue in
+            if browserInsecureHTTPAllowlistDraft == oldValue {
+                browserInsecureHTTPAllowlistDraft = newValue
+            }
         }
         .onReceive(BrowserHistoryStore.shared.$entries) { entries in
             browserHistoryEntryCount = entries.count
@@ -969,6 +1151,14 @@ struct TastyBrowserSettingsSection: View {
             }
             Button(String(localized: "settings.browser.history.clearDialog.cancel", defaultValue: "Cancel"), role: .cancel) {}
         }
+    }
+
+    private func saveBrowserInsecureHTTPAllowlist() {
+        browserInsecureHTTPAllowlist = browserInsecureHTTPAllowlistDraft
+    }
+
+    private func refreshDetectedImportBrowsers() {
+        detectedImportBrowsers = InstalledBrowserDetector.detectInstalledBrowsers()
     }
 }
 
