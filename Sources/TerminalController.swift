@@ -5953,7 +5953,8 @@ class TerminalController {
             let sendStart = ProcessInfo.processInfo.systemUptime
             #endif
             let queued: Bool
-            if let surface = terminalPanel.surface.surface {
+            let surface: ghostty_surface_t? = terminalPanel.surface.surface ?? waitForTerminalSurface(terminalPanel, waitUpTo: 2.0)
+            if let surface {
                 if bracketPaste {
                     // Wrap in bracket paste mode so the terminal treats newlines as literal paste
                     sendTextEvent(surface: surface, text: "\u{1b}[200~")
