@@ -125,3 +125,7 @@ Parent Claude가 worktree를 생성할 때, 아래 디렉토리는 수정 대상
 - 파일명은 작업 내용을 요약하는 kebab-case로 (예: `read-mark.md`, `keyboard-shortcut-fix.md`)
 - 문서에는 배경, 변경 내용, 수정된 파일 목록 등을 포함
 - 기존 `docs/tasty/` 문서들의 형식을 참고하여 일관성 유지
+
+## 커밋 정책
+
+작업이 완료되면 반드시 커밋한다. 커밋 메시지는 conventional commit 형식(`feat:`, `fix:`, `docs:` 등)을 사용하고, 변경 내용을 간결하게 요약한다.
