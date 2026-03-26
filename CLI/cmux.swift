@@ -2737,6 +2737,112 @@ struct CMUXCLI {
                 print("OK \(sentCount)/\(totalChildren) sent")
             }
 
+        case "surface-meta":
+            let smSubcommand = commandArgs.first ?? ""
+            let smArgs = commandArgs.dropFirst().map { $0 }
+            switch smSubcommand {
+            case "set":
+                let (smSfArg, smRem0) = parseOption(smArgs, name: "--surface")
+                let (smKeyArg, smRem1) = parseOption(smRem0, name: "--key")
+                let (smValArg, _) = parseOption(smRem1, name: "--value")
+                guard let smKeyArg else {
+                    throw CLIError(message: "surface-meta set requires --key")
+                }
+                guard let smValArg else {
+                    throw CLIError(message: "surface-meta set requires --value")
+                }
+                let smSurfaceArg = smSfArg ?? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+                let smSfId = try normalizeSurfaceHandle(smSurfaceArg, client: client, workspaceHandle: nil)
+                guard let smSfId else {
+                    throw CLIError(message: "surface-meta set requires --surface or $CMUX_SURFACE_ID")
+                }
+                let smSetPayload = try client.sendV2(method: "surface.set_meta_kv", params: [
+                    "surface_id": smSfId, "key": smKeyArg, "value": smValArg
+                ])
+                if jsonOutput {
+                    print(jsonString(smSetPayload))
+                } else {
+                    print("OK")
+                }
+
+            case "get":
+                let (smSfArg, smRem0) = parseOption(smArgs, name: "--surface")
+                let (smKeyArg, _) = parseOption(smRem0, name: "--key")
+                guard let smKeyArg else {
+                    throw CLIError(message: "surface-meta get requires --key")
+                }
+                let smSurfaceArg = smSfArg ?? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+                let smSfId = try normalizeSurfaceHandle(smSurfaceArg, client: client, workspaceHandle: nil)
+                guard let smSfId else {
+                    throw CLIError(message: "surface-meta get requires --surface or $CMUX_SURFACE_ID")
+                }
+                let smGetPayload = try client.sendV2(method: "surface.get_meta_kv", params: [
+                    "surface_id": smSfId, "key": smKeyArg
+                ])
+                if jsonOutput {
+                    print(jsonString(smGetPayload))
+                } else {
+                    if let data = smGetPayload["data"] as? [String: Any],
+                       let value = data["value"] as? String {
+                        print(value)
+                    } else {
+                        print("(not set)")
+                    }
+                }
+
+            case "unset":
+                let (smSfArg, smRem0) = parseOption(smArgs, name: "--surface")
+                let (smKeyArg, _) = parseOption(smRem0, name: "--key")
+                guard let smKeyArg else {
+                    throw CLIError(message: "surface-meta unset requires --key")
+                }
+                let smSurfaceArg = smSfArg ?? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+                let smSfId = try normalizeSurfaceHandle(smSurfaceArg, client: client, workspaceHandle: nil)
+                guard let smSfId else {
+                    throw CLIError(message: "surface-meta unset requires --surface or $CMUX_SURFACE_ID")
+                }
+                let smUnsetPayload = try client.sendV2(method: "surface.unset_meta_kv", params: [
+                    "surface_id": smSfId, "key": smKeyArg
+                ])
+                if jsonOutput {
+                    print(jsonString(smUnsetPayload))
+                } else {
+                    print("OK")
+                }
+
+            case "list":
+                let (smSfArg, _) = parseOption(smArgs, name: "--surface")
+                let smSurfaceArg = smSfArg ?? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"]
+                let smSfId = try normalizeSurfaceHandle(smSurfaceArg, client: client, workspaceHandle: nil)
+                guard let smSfId else {
+                    throw CLIError(message: "surface-meta list requires --surface or $CMUX_SURFACE_ID")
+                }
+                let smListPayload = try client.sendV2(method: "surface.list_meta_kv", params: [
+                    "surface_id": smSfId
+                ])
+                if jsonOutput {
+                    print(jsonString(smListPayload))
+                } else {
+                    if let data = smListPayload["data"] as? [String: Any],
+                       let meta = data["metadata"] as? [String: String] {
+                        if meta.isEmpty {
+                            print("(no metadata)")
+                        } else {
+                            for (k, v) in meta.sorted(by: { $0.key < $1.key }) {
+                                print("\(k)=\(v)")
+                            }
+                        }
+                    }
+                }
+
+            default:
+                if smSubcommand.isEmpty {
+                    throw CLIError(message: "surface-meta requires a subcommand: set, get, unset, list")
+                } else {
+                    throw CLIError(message: "Unknown surface-meta subcommand: \(smSubcommand)")
+                }
+            }
+
         case "surface-hook":
             let shSubcommand = commandArgs.first ?? ""
             let shArgs = commandArgs.dropFirst().map { $0 }
@@ -7971,6 +8077,32 @@ struct CMUXCLI {
               cmux claude-broadcast --wait-idle "do this next task\\n"
               cmux claude-broadcast --json "status update\\n"
             """
+        case "surface-meta":
+            return """
+            Usage: cmux surface-meta <set|get|unset|list> [flags]
+
+            Manage per-surface key-value metadata. Metadata is stored as a JSON file
+            on disk and can be read by hooks, skills, or any process that knows the
+            surface ID.
+
+            Subcommands:
+              set    --key <key> --value <value> [--surface <ref>]
+              get    --key <key> [--surface <ref>]
+              unset  --key <key> [--surface <ref>]
+              list   [--surface <ref>]
+
+            Flags:
+              --surface <id|ref>   Target surface (default: $CMUX_SURFACE_ID)
+              --key <key>          Metadata key
+              --value <value>      Metadata value
+
+            Example:
+              cmux surface-meta set --key role --value conductor
+              cmux surface-meta get --key role
+              cmux surface-meta list
+              cmux surface-meta list --surface surface:3
+              cmux surface-meta unset --key role
+            """
         case "surface-hook":
             return """
             Usage: cmux surface-hook <set|list|unset> [flags]
@@ -12741,6 +12873,10 @@ struct CMUXCLI {
           message-count
           message-clear
           claude-broadcast [--file <path>] [--wait-idle] <text>
+          surface-meta set --key <key> --value <value> [--surface <ref>]
+          surface-meta get --key <key> [--surface <ref>]
+          surface-meta unset --key <key> [--surface <ref>]
+          surface-meta list [--surface <ref>]
           surface-hook set --surface <ref> --event <event> --command <cmd> [--workspace <ref>]
           surface-hook list --surface <ref> [--event <event>] [--workspace <ref>]
           surface-hook unset --hook-id <uuid>

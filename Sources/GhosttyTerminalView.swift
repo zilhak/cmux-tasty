@@ -3333,6 +3333,11 @@ final class TerminalSurface: Identifiable, ObservableObject {
         setManagedEnvironmentValue("CMUX_PANEL_ID", id.uuidString)
         setManagedEnvironmentValue("CMUX_TAB_ID", tabId.uuidString)
         setManagedEnvironmentValue("CMUX_SOCKET_PATH", SocketControlSettings.socketPath())
+
+        // Surface metadata directory — created eagerly so CLI/hooks can read/write metadata.
+        let metaDir = SurfaceMetaStore.metaDirectory(for: id)
+        SurfaceMetaStore.ensureCreated(surfaceId: id)
+        setManagedEnvironmentValue("CMUX_SURFACE_META_DIR", metaDir.path)
         if let bundledCLIURL = Bundle.main.resourceURL?.appendingPathComponent("bin/cmux"),
            FileManager.default.isExecutableFile(atPath: bundledCLIURL.path) {
             setManagedEnvironmentValue("CMUX_BUNDLED_CLI_PATH", bundledCLIURL.path)

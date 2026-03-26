@@ -392,12 +392,6 @@ final class WindowTerminalHostView: NSView {
         ].joined(separator: "|")
         guard lastDragRouteSignature != signature else { return }
         lastDragRouteSignature = signature
-
-        dlog(
-            "portal.dragRoute passThrough=\(passThrough ? 1 : 0) " +
-            "event=\(debugEventName(eventType)) target=\(targetClass) " +
-            "types=\(debugPasteboardTypes(pasteboardTypes))"
-        )
     }
 
     private func debugPasteboardTypes(_ types: [NSPasteboard.PasteboardType]?) -> String {

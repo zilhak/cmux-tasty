@@ -2586,6 +2586,16 @@ class TerminalController {
         case "surface.hook_logs":
             return v2Result(id: id, self.v2SurfaceHookLogs(params: params))
 
+        // Surface metadata (file-backed key-value store)
+        case "surface.set_meta_kv":
+            return v2Result(id: id, self.v2SurfaceSetMetaKV(params: params))
+        case "surface.get_meta_kv":
+            return v2Result(id: id, self.v2SurfaceGetMetaKV(params: params))
+        case "surface.unset_meta_kv":
+            return v2Result(id: id, self.v2SurfaceUnsetMetaKV(params: params))
+        case "surface.list_meta_kv":
+            return v2Result(id: id, self.v2SurfaceListMetaKV(params: params))
+
         case "workspace.claude_activity":
             return v2Result(id: id, self.v2WorkspaceClaudeActivity(params: params))
 
@@ -2765,6 +2775,10 @@ class TerminalController {
             "surface.list_hooks",
             "surface.unset_hook",
             "surface.fire_hook",
+            "surface.set_meta_kv",
+            "surface.get_meta_kv",
+            "surface.unset_meta_kv",
+            "surface.list_meta_kv",
             "pane.list",
             "pane.focus",
             "pane.surfaces",
@@ -5188,7 +5202,7 @@ class TerminalController {
 
             default:
                 // terminal (default)
-                if let newId = tabManager.newSplit(tabId: ws.id, surfaceId: targetSurfaceId, direction: direction) {
+                if let newId = tabManager.newSplit(tabId: ws.id, surfaceId: targetSurfaceId, direction: direction, focus: v2FocusAllowed()) {
                     let paneUUID = ws.paneId(forPanelId: newId)?.id
                     let windowId = v2ResolveWindowId(tabManager: tabManager)
                     result = .ok([
@@ -7066,8 +7080,71 @@ class TerminalController {
         ])
     }
 
+    // MARK: - Surface Metadata (file-backed KV)
+
+    private func v2SurfaceSetMetaKV(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+        guard let key = v2String(params, "key"), !key.isEmpty else {
+            return .err(code: "invalid_params", message: "Missing key", data: nil)
+        }
+        guard let value = v2String(params, "value") else {
+            return .err(code: "invalid_params", message: "Missing value", data: nil)
+        }
+        SurfaceMetaStore.set(surfaceId: surfaceId, key: key, value: value)
+        return .ok([
+            "surface_id": surfaceId.uuidString,
+            "key": key,
+            "value": value
+        ])
+    }
+
+    private func v2SurfaceGetMetaKV(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+        guard let key = v2String(params, "key"), !key.isEmpty else {
+            return .err(code: "invalid_params", message: "Missing key", data: nil)
+        }
+        let value = SurfaceMetaStore.read(surfaceId: surfaceId, key: key)
+        return .ok([
+            "surface_id": surfaceId.uuidString,
+            "key": key,
+            "value": v2OrNull(value)
+        ])
+    }
+
+    private func v2SurfaceUnsetMetaKV(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+        guard let key = v2String(params, "key"), !key.isEmpty else {
+            return .err(code: "invalid_params", message: "Missing key", data: nil)
+        }
+        SurfaceMetaStore.unset(surfaceId: surfaceId, key: key)
+        return .ok([
+            "surface_id": surfaceId.uuidString,
+            "key": key
+        ])
+    }
+
+    private func v2SurfaceListMetaKV(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+        let dict = SurfaceMetaStore.readAll(surfaceId: surfaceId)
+        return .ok([
+            "surface_id": surfaceId.uuidString,
+            "metadata": dict
+        ])
+    }
+
     /// Clean up claude parent-child relationships when a surface is closed.
     func claudeCleanupOnSurfaceClose(_ surfaceId: UUID) {
+        // Clean up surface metadata files
+        SurfaceMetaStore.remove(surfaceId: surfaceId)
+
         // Clean up hook idle state
         claudeHookIdleState.removeValue(forKey: surfaceId)
 
@@ -13815,7 +13892,8 @@ class TerminalController {
                 return
             }
 
-            if let newPanelId = tabManager.newSplit(tabId: tabId, surfaceId: targetSurface, direction: direction) {
+            let focus = socketCommandAllowsInAppFocusMutations()
+            if let newPanelId = tabManager.newSplit(tabId: tabId, surfaceId: targetSurface, direction: direction, focus: focus) {
                 result = "OK \(newPanelId.uuidString)"
             }
         }

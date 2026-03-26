@@ -875,12 +875,6 @@ final class FileDropOverlayView: NSView {
         let signature = "\(shouldCapture ? 1 : 0)|\(debugEventName(eventType))|\(debugPasteboardTypes(pasteboardTypes))"
         guard lastHitTestLogSignature != signature else { return }
         lastHitTestLogSignature = signature
-        dlog(
-            "overlay.fileDrop.hitTest capture=\(shouldCapture ? 1 : 0) " +
-            "event=\(debugEventName(eventType)) " +
-            "topHit=\(debugTopHitViewForCurrentEvent()) " +
-            "types=\(debugPasteboardTypes(pasteboardTypes))"
-        )
     }
 
     private func logDragRouteDecision(
