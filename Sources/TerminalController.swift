@@ -5173,6 +5173,11 @@ class TerminalController {
                 return .err(code: "invalid_params", message: "Missing 'file' parameter for markdown type", data: nil)
             }
         }
+        if panelType == .explorer {
+            guard v2String(params, "path") != nil || v2String(params, "file") != nil else {
+                return .err(code: "invalid_params", message: "Missing 'path' parameter for explorer type", data: nil)
+            }
+        }
 
         var result: V2CallResult = .err(code: "internal_error", message: "Failed to create split", data: nil)
         v2MainSync {
@@ -5259,6 +5264,33 @@ class TerminalController {
                     ])
                 } else {
                     result = .err(code: "internal_error", message: "Failed to create markdown split", data: nil)
+                }
+
+            case .explorer:
+                let rootPath = v2String(params, "path") ?? v2String(params, "file") ?? "."
+                if let createdPanel = ws.newExplorerSplit(
+                    from: targetSurfaceId,
+                    orientation: direction.orientation,
+                    insertFirst: direction.insertFirst,
+                    rootPath: rootPath,
+                    focus: v2FocusAllowed()
+                ) {
+                    let paneUUID = ws.paneId(forPanelId: createdPanel.id)?.id
+                    let windowId = v2ResolveWindowId(tabManager: tabManager)
+                    result = .ok([
+                        "window_id": v2OrNull(windowId?.uuidString),
+                        "window_ref": v2Ref(kind: .window, uuid: windowId),
+                        "workspace_id": ws.id.uuidString,
+                        "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+                        "pane_id": v2OrNull(paneUUID?.uuidString),
+                        "pane_ref": v2Ref(kind: .pane, uuid: paneUUID),
+                        "surface_id": createdPanel.id.uuidString,
+                        "surface_ref": v2Ref(kind: .surface, uuid: createdPanel.id),
+                        "type": PanelType.explorer.rawValue,
+                        "path": rootPath
+                    ])
+                } else {
+                    result = .err(code: "internal_error", message: "Failed to create explorer split", data: nil)
                 }
 
             default:

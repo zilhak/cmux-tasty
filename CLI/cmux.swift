@@ -1695,7 +1695,8 @@ struct CMUXCLI {
             let (paneArg, rem2b) = parseOption(rem2, name: "--pane")
             let (typeArg, rem3) = parseOption(rem2b, name: "--type")
             let (urlArg, rem4) = parseOption(rem3, name: "--url")
-            let (fileArg, rem5) = parseOption(rem4, name: "--file")
+            let (fileArg, rem5a) = parseOption(rem4, name: "--file")
+            let (pathArg, rem5) = parseOption(rem5a, name: "--path")
             let workspaceArg = wsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
             let surfaceRaw = sfArg ?? panelArg ?? (wsArg == nil && windowId == nil ? ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] : nil)
             guard let direction = rem5.first else {
@@ -1713,6 +1714,11 @@ struct CMUXCLI {
             if let typeArg { params["type"] = typeArg }
             if let urlArg { params["url"] = urlArg }
             if let fileArg { params["file"] = fileArg }
+            if let pathArg {
+                let resolved = (pathArg as NSString).expandingTildeInPath
+                let absPath = resolved.hasPrefix("/") ? resolved : FileManager.default.currentDirectoryPath + "/" + resolved
+                params["path"] = absPath
+            }
             let payload = try client.sendV2(method: "surface.split", params: params)
             printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: v2OKSummary(payload, idFormat: idFormat))
 
@@ -7507,7 +7513,7 @@ struct CMUXCLI {
               --surface <id|ref>     Surface to split from (default: $CMUX_SURFACE_ID)
               --panel <id|ref>       Alias for --surface
               --pane <id|ref>        Pane to split (uses pane's selected surface). Ignored if --surface is set.
-              --type <type>          Panel type: terminal (default), browser, markdown
+              --type <type>          Panel type: terminal (default), browser, markdown, explorer
               --url <url>            URL to open (browser type only)
               --file <path>          File path to open (markdown type, required)
 

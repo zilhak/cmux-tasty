@@ -427,6 +427,9 @@ extension Workspace {
             terminalSnapshot = nil
             browserSnapshot = nil
             markdownSnapshot = SessionMarkdownPanelSnapshot(filePath: markdownPanel.filePath)
+        case .explorer:
+            // Explorer panels are not snapshotted for session restore yet.
+            return nil
         case .surfaceGroup:
             // Surface groups are not individually snapshotted for session restore.
             return nil
@@ -621,6 +624,9 @@ extension Workspace {
             }
             applySessionPanelMetadata(snapshot, toPanelId: markdownPanel.id)
             return markdownPanel.id
+        case .explorer:
+            // Explorer panels are not restored from session snapshots yet.
+            return nil
         case .surfaceGroup:
             // Surface groups are not individually restored from session snapshots.
             return nil
@@ -5308,6 +5314,7 @@ final class Workspace: Identifiable, ObservableObject {
         static let terminal = "terminal"
         static let browser = "browser"
         static let markdown = "markdown"
+        static let explorer = "explorer"
     }
 
     // MARK: - Surface Group Helpers
@@ -5948,6 +5955,8 @@ final class Workspace: Identifiable, ObservableObject {
             return SurfaceKind.browser
         case .markdown:
             return SurfaceKind.markdown
+        case .explorer:
+            return SurfaceKind.explorer
         case .surfaceGroup:
             return SurfaceKind.terminal
         }
@@ -7583,6 +7592,67 @@ final class Workspace: Identifiable, ObservableObject {
 
         installMarkdownPanelSubscription(markdownPanel)
         return markdownPanel
+    }
+
+    func newExplorerSplit(
+        from panelId: UUID,
+        orientation: SplitOrientation,
+        insertFirst: Bool = false,
+        rootPath: String,
+        focus: Bool = true
+    ) -> ExplorerPanel? {
+        guard let sourceTabId = surfaceIdFromPanelId(panelId) else { return nil }
+        var sourcePaneId: PaneID?
+        for paneId in bonsplitController.allPaneIds {
+            let tabs = bonsplitController.tabs(inPane: paneId)
+            if tabs.contains(where: { $0.id == sourceTabId }) {
+                sourcePaneId = paneId
+                break
+            }
+        }
+
+        guard let paneId = sourcePaneId else { return nil }
+
+        let explorerPanel = ExplorerPanel(workspaceId: id, rootPath: rootPath)
+        panels[explorerPanel.id] = explorerPanel
+        panelTitles[explorerPanel.id] = explorerPanel.displayTitle
+
+        let newTab = Bonsplit.Tab(
+            title: explorerPanel.displayTitle,
+            icon: explorerPanel.displayIcon,
+            kind: SurfaceKind.explorer,
+            isDirty: false,
+            isLoading: false,
+            isPinned: false
+        )
+        surfaceIdToPanelId[newTab.id] = explorerPanel.id
+        let previousFocusedPanelId = focusedPanelId
+
+        isProgrammaticSplit = true
+        defer { isProgrammaticSplit = false }
+        guard bonsplitController.splitPane(paneId, orientation: orientation, withTab: newTab, insertFirst: insertFirst) != nil else {
+            surfaceIdToPanelId.removeValue(forKey: newTab.id)
+            panels.removeValue(forKey: explorerPanel.id)
+            panelTitles.removeValue(forKey: explorerPanel.id)
+            return nil
+        }
+
+        let previousHostedView = focusedTerminalPanel?.hostedView
+        if focus {
+            previousHostedView?.suppressReparentFocus()
+            focusPanel(explorerPanel.id)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                previousHostedView?.clearSuppressReparentFocus()
+            }
+        } else {
+            preserveFocusAfterNonFocusSplit(
+                preferredPanelId: previousFocusedPanelId,
+                splitPanelId: explorerPanel.id,
+                previousHostedView: previousHostedView
+            )
+        }
+
+        return explorerPanel
     }
 
     @discardableResult

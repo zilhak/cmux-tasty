@@ -55,6 +55,16 @@ struct PanelContentView: View {
                     onRequestPanelFocus: onRequestPanelFocus
                 )
             }
+        case .explorer:
+            if let explorerPanel = panel as? ExplorerPanel {
+                ExplorerPanelView(
+                    panel: explorerPanel,
+                    isFocused: isFocused,
+                    isVisibleInUI: isVisibleInUI,
+                    portalPriority: portalPriority,
+                    onRequestPanelFocus: onRequestPanelFocus
+                )
+            }
         case .surfaceGroup:
             if let surfaceGroup = panel as? SurfaceGroup {
                 SurfaceGroupView(

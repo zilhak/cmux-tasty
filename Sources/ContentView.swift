@@ -4987,6 +4987,8 @@ struct ContentView: View {
             return String(localized: "commandPalette.kind.browser", defaultValue: "Browser")
         case .markdown:
             return String(localized: "commandPalette.kind.markdown", defaultValue: "Markdown")
+        case .explorer:
+            return "Explorer"
         case .surfaceGroup:
             return String(localized: "commandPalette.kind.terminal", defaultValue: "Terminal")
         }
@@ -5000,6 +5002,8 @@ struct ContentView: View {
             return ["browser", "web", "page"]
         case .markdown:
             return ["markdown", "note", "preview"]
+        case .explorer:
+            return ["explorer", "file", "browse", "tree"]
         case .surfaceGroup:
             return ["terminal", "surface", "group"]
         }
