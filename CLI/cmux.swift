@@ -1692,7 +1692,8 @@ struct CMUXCLI {
             let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
             let (panelArg, rem1) = parseOption(rem0, name: "--panel")
             let (sfArg, rem2) = parseOption(rem1, name: "--surface")
-            let (typeArg, rem3) = parseOption(rem2, name: "--type")
+            let (paneArg, rem2b) = parseOption(rem2, name: "--pane")
+            let (typeArg, rem3) = parseOption(rem2b, name: "--type")
             let (urlArg, rem4) = parseOption(rem3, name: "--url")
             let (fileArg, rem5) = parseOption(rem4, name: "--file")
             let workspaceArg = wsArg ?? (windowId == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
@@ -1705,6 +1706,10 @@ struct CMUXCLI {
             if let wsId { params["workspace_id"] = wsId }
             let sfId = try normalizeSurfaceHandle(surfaceRaw, client: client, workspaceHandle: wsId)
             if let sfId { params["surface_id"] = sfId }
+            if sfId == nil, let paneArg {
+                let paneId = try normalizePaneHandle(paneArg, client: client, workspaceHandle: wsId)
+                if let paneId { params["pane_id"] = paneId }
+            }
             if let typeArg { params["type"] = typeArg }
             if let urlArg { params["url"] = urlArg }
             if let fileArg { params["file"] = fileArg }
@@ -2422,6 +2427,15 @@ struct CMUXCLI {
 
                 let cwStatus = cwChild?["status"] as? [String: Any]
                 let cwState = cwStatus?["state"] as? String ?? "unknown"
+
+                if cwState == "needs_input" {
+                    if jsonOutput {
+                        print(jsonString(["child_index": cwChildIdx, "state": "needs_input"] as [String: Any]))
+                    } else {
+                        print("OK child:\(cwChildIdx) needs_input")
+                    }
+                    break
+                }
 
                 if cwState == "idle" {
                     if jsonOutput {
@@ -7348,13 +7362,17 @@ struct CMUXCLI {
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
               --surface <id|ref>     Surface to split from (default: $CMUX_SURFACE_ID)
               --panel <id|ref>       Alias for --surface
+              --pane <id|ref>        Pane to split (uses pane's selected surface). Ignored if --surface is set.
               --type <type>          Panel type: terminal (default), browser, markdown
               --url <url>            URL to open (browser type only)
               --file <path>          File path to open (markdown type, required)
 
+            Target resolution order: --surface > --pane (selected surface) > focused surface
+
             Example:
               cmux new-split right
               cmux new-split down --workspace workspace:1
+              cmux new-split down --pane pane:3 --type markdown --file ./notes.md
               cmux new-split right --type browser --url https://example.com
               cmux new-split right --type markdown --file ./README.md
             """
@@ -7960,8 +7978,13 @@ struct CMUXCLI {
             return """
             Usage: cmux claude-wait <child:N> [--timeout <seconds>]
 
-            Block until a child Claude process becomes idle or exits.
+            Block until a child Claude process becomes idle, needs input, or exits.
             Designed to be used with Bash run_in_background for non-intrusive notifications.
+
+            Possible states returned:
+              idle           Child finished its task and is waiting at prompt
+              needs_input    Child is waiting for user input (e.g., plan mode)
+              exited         Child process has exited
 
             Arguments:
               <child:N>              Child reference (e.g., child:3)
@@ -8107,7 +8130,7 @@ struct CMUXCLI {
             return """
             Usage: cmux surface-hook <set|list|unset> [flags]
 
-            Manage per-surface event hooks. Supported events: process-exit, claude-idle.
+            Manage per-surface event hooks. Supported events: process-exit, claude-idle, claude-needs-input.
 
             Subcommands:
               set    --surface <ref> --event <event> --command <cmd> [--workspace <ref>]
@@ -8120,7 +8143,7 @@ struct CMUXCLI {
             Flags (set / list):
               --surface <id|ref>     Target surface (required or $CMUX_SURFACE_ID)
               --workspace <id|ref>   Workspace context (default: $CMUX_WORKSPACE_ID)
-              --event <event>        Event name: process-exit, claude-idle
+              --event <event>        Event name: process-exit, claude-idle, claude-needs-input
 
             Example:
               cmux surface-hook set --surface surface:2 --event process-exit --command "cmux notify --title done"
@@ -9844,42 +9867,32 @@ struct CMUXCLI {
                 lines.append("\(workspaceBranch)\(treeWorkspaceLabel(workspace, idFormat: idFormat))")
 
                 let panes = workspace["panes"] as? [[String: Any]] ?? []
-                for (paneIndex, pane) in panes.enumerated() {
-                    let paneIsLast = paneIndex == panes.count - 1
-                    let paneBranch = paneIsLast ? "└── " : "├── "
-                    let paneIndent = paneIsLast ? "    " : "│   "
-                    lines.append("\(workspaceIndent)\(paneBranch)\(treePaneLabel(pane, idFormat: idFormat))")
+                let panesByRef = Dictionary(panes.compactMap { pane -> (String, [String: Any])? in
+                    guard let ref = (pane["ref"] as? String) ?? (pane["id"] as? String) else { return nil }
+                    return (ref, pane)
+                }, uniquingKeysWith: { _, b in b })
+                let panesById = Dictionary(panes.compactMap { pane -> (String, [String: Any])? in
+                    guard let id = pane["id"] as? String else { return nil }
+                    return (id, pane)
+                }, uniquingKeysWith: { _, b in b })
 
-                    let surfaces = pane["surfaces"] as? [[String: Any]] ?? []
-                    for (surfaceIndex, surface) in surfaces.enumerated() {
-                        let surfaceIsLast = surfaceIndex == surfaces.count - 1
-                        let surfaceBranch = surfaceIsLast ? "└── " : "├── "
-                        let surfaceIndent = surfaceIsLast ? "    " : "│   "
-                        // If this surface has a surface group, append [group ↔/↕] to the label
-                        // and render children directly under it (absorbing the top-level split).
-                        if let groupNode = surface["surface_group"] as? [String: Any],
-                           (groupNode["type"] as? String) == "split" {
-                            let orientation = (groupNode["orientation"] as? String) ?? "horizontal"
-                            let arrow = orientation == "horizontal" ? "↔" : "↕"
-                            lines.append("\(workspaceIndent)\(paneIndent)\(surfaceBranch)\(treeSurfaceLabel(surface, idFormat: idFormat)) [group \(arrow)]")
-
-                            let children = groupNode["children"] as? [[String: Any]] ?? []
-                            let basePrefix = "\(workspaceIndent)\(paneIndent)\(surfaceIndent)"
-                            for (childIndex, child) in children.enumerated() {
-                                let childIsLast = childIndex == children.count - 1
-                                let branch = childIsLast ? "└── " : "├── "
-                                let indent = childIsLast ? "    " : "│   "
-                                renderSurfaceGroupNode(
-                                    child,
-                                    linePrefix: "\(basePrefix)\(branch)",
-                                    childPrefix: "\(basePrefix)\(indent)",
-                                    lines: &lines,
-                                    idFormat: idFormat
-                                )
-                            }
-                        } else {
-                            lines.append("\(workspaceIndent)\(paneIndent)\(surfaceBranch)\(treeSurfaceLabel(surface, idFormat: idFormat))")
-                        }
+                // Use split_tree if available, otherwise fall back to flat pane list
+                if let splitTree = workspace["split_tree"] as? [String: Any],
+                   (splitTree["type"] as? String) == "split" {
+                    renderSplitTreeNode(
+                        splitTree,
+                        panesByRef: panesByRef,
+                        panesById: panesById,
+                        prefix: workspaceIndent,
+                        isLast: true,
+                        lines: &lines,
+                        idFormat: idFormat
+                    )
+                } else {
+                    for (paneIndex, pane) in panes.enumerated() {
+                        let paneIsLast = paneIndex == panes.count - 1
+                        let paneBranch = paneIsLast ? "└── " : "├── "
+                        renderPaneWithSurfaces(pane, prefix: "\(workspaceIndent)\(paneBranch)", childPrefix: "\(workspaceIndent)\(paneIsLast ? "    " : "│   ")", lines: &lines, idFormat: idFormat)
                     }
                 }
             }
@@ -9985,6 +9998,85 @@ struct CMUXCLI {
                     lines: &lines,
                     idFormat: idFormat
                 )
+            }
+        }
+    }
+
+    /// Render a split_tree node recursively, showing split orientation/ratio and pane leaves.
+    private func renderSplitTreeNode(
+        _ node: [String: Any],
+        panesByRef: [String: [String: Any]],
+        panesById: [String: [String: Any]],
+        prefix: String,
+        isLast: Bool,
+        lines: inout [String],
+        idFormat: CLIIDFormat
+    ) {
+        let nodeType = (node["type"] as? String) ?? ""
+        if nodeType == "split" {
+            let orientation = (node["orientation"] as? String) ?? "horizontal"
+            let ratioLabel = (node["ratio_label"] as? String) ?? "50/50"
+            let arrow = orientation == "horizontal" ? "↔" : "↕"
+            let branch = isLast ? "└── " : "├── "
+            let indent = isLast ? "    " : "│   "
+            lines.append("\(prefix)\(branch)[\(orientation) \(arrow) \(ratioLabel)]")
+            let childPrefix = "\(prefix)\(indent)"
+            if let first = node["first"] as? [String: Any] {
+                renderSplitTreeNode(first, panesByRef: panesByRef, panesById: panesById, prefix: childPrefix, isLast: false, lines: &lines, idFormat: idFormat)
+            }
+            if let second = node["second"] as? [String: Any] {
+                renderSplitTreeNode(second, panesByRef: panesByRef, panesById: panesById, prefix: childPrefix, isLast: true, lines: &lines, idFormat: idFormat)
+            }
+        } else if nodeType == "pane" {
+            let paneRef = (node["pane_ref"] as? String) ?? ""
+            let paneId = (node["pane_id"] as? String) ?? ""
+            let pane = panesByRef[paneRef] ?? panesById[paneId]
+            let branch = isLast ? "└── " : "├── "
+            let indent = isLast ? "    " : "│   "
+            if let pane {
+                renderPaneWithSurfaces(pane, prefix: "\(prefix)\(branch)", childPrefix: "\(prefix)\(indent)", lines: &lines, idFormat: idFormat)
+            } else {
+                lines.append("\(prefix)\(branch)pane \(paneRef.isEmpty ? paneId : paneRef)")
+            }
+        }
+    }
+
+    /// Render a single pane and its surfaces.
+    private func renderPaneWithSurfaces(
+        _ pane: [String: Any],
+        prefix: String,
+        childPrefix: String,
+        lines: inout [String],
+        idFormat: CLIIDFormat
+    ) {
+        lines.append("\(prefix)\(treePaneLabel(pane, idFormat: idFormat))")
+        let surfaces = pane["surfaces"] as? [[String: Any]] ?? []
+        for (surfaceIndex, surface) in surfaces.enumerated() {
+            let surfaceIsLast = surfaceIndex == surfaces.count - 1
+            let surfaceBranch = surfaceIsLast ? "└── " : "├── "
+            let surfaceIndent = surfaceIsLast ? "    " : "│   "
+            if let groupNode = surface["surface_group"] as? [String: Any],
+               (groupNode["type"] as? String) == "split" {
+                let orientation = (groupNode["orientation"] as? String) ?? "horizontal"
+                let arrow = orientation == "horizontal" ? "↔" : "↕"
+                lines.append("\(childPrefix)\(surfaceBranch)\(treeSurfaceLabel(surface, idFormat: idFormat)) [group \(arrow)]")
+
+                let children = groupNode["children"] as? [[String: Any]] ?? []
+                let basePrefix = "\(childPrefix)\(surfaceIndent)"
+                for (childIndex, child) in children.enumerated() {
+                    let childIsLast = childIndex == children.count - 1
+                    let branch = childIsLast ? "└── " : "├── "
+                    let indent = childIsLast ? "    " : "│   "
+                    renderSurfaceGroupNode(
+                        child,
+                        linePrefix: "\(basePrefix)\(branch)",
+                        childPrefix: "\(basePrefix)\(indent)",
+                        lines: &lines,
+                        idFormat: idFormat
+                    )
+                }
+            } else {
+                lines.append("\(childPrefix)\(surfaceBranch)\(treeSurfaceLabel(surface, idFormat: idFormat))")
             }
         }
     }
@@ -11797,6 +11889,19 @@ struct CMUXCLI {
                 icon: "bell.fill",
                 color: "#4C8DFF"
             )
+
+            // Set needs-input state so parent can detect via claude-wait/claude-children
+            _ = try? client.sendV2(method: "claude.set_needs_input", params: [
+                "surface_id": surfaceId,
+                "needs_input": true,
+            ])
+
+            // Fire claude-needs-input surface hook (for parent detection)
+            _ = try? client.sendV2(method: "surface.fire_hook", params: [
+                "surface_id": surfaceId,
+                "event": "claude-needs-input",
+            ])
+
             print(response)
 
         case "session-end":
@@ -12833,7 +12938,7 @@ struct CMUXCLI {
           new-workspace [--cwd <path>] [--command <text>] [--type <terminal|markdown>] [--file <path>]
           ssh <destination> [--name <title>] [--port <n>] [--identity <path>] [--ssh-option <opt>] [-- <remote-command-args>]
           remote-daemon-status [--os <darwin|linux>] [--arch <arm64|amd64>]
-          new-split <left|right|up|down> [--workspace <id|ref>] [--surface <id|ref>] [--panel <id|ref>]
+          new-split <left|right|up|down> [--workspace <id|ref>] [--surface <id|ref>] [--panel <id|ref>] [--pane <id|ref>]
           list-panes [--workspace <id|ref>]
           list-pane-surfaces [--workspace <id|ref>] [--pane <id|ref>]
           tree [--all] [--workspace <id|ref|index>]

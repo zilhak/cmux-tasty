@@ -208,6 +208,8 @@ class TerminalController {
     private var surfaceActivitySnapshots: [UUID: SurfaceActivitySnapshot] = [:]
     /// Hook-based idle state for Claude child surfaces (set via claude.set_idle_state)
     private var claudeHookIdleState: [UUID: Bool] = [:]
+    /// Hook-based needs-input state for Claude child surfaces (set via claude.set_needs_input)
+    private var claudeHookNeedsInputState: [UUID: Bool] = [:]
 
     // MARK: - Wait-Idle Send Queue
     /// Queued text items waiting to be delivered when the target surface becomes idle.
@@ -2612,6 +2614,8 @@ class TerminalController {
             return v2Result(id: id, self.v2ClaudeRespawn(params: params))
         case "claude.set_idle_state":
             return v2Result(id: id, self.v2ClaudeSetIdleState(params: params))
+        case "claude.set_needs_input":
+            return v2Result(id: id, self.v2ClaudeSetNeedsInput(params: params))
         case "claude.broadcast":
             return v2Result(id: id, self.v2ClaudeBroadcast(params: params))
 
@@ -2763,6 +2767,7 @@ class TerminalController {
             "claude.kill_child",
             "claude.respawn",
             "claude.set_idle_state",
+            "claude.set_needs_input",
             "claude.child_workspace",
             "claude.child_workspaces",
             "message.send",
@@ -3221,6 +3226,9 @@ class TerminalController {
             ]
         }
 
+        // Build split_tree from bonsplit's tree snapshot
+        let splitTree = v2TreeSplitTreeNode(workspace.bonsplitController.treeSnapshot(), paneByPanelId: paneByPanelId)
+
         return [
             "id": workspace.id.uuidString,
             "ref": v2Ref(kind: .workspace, uuid: workspace.id),
@@ -3228,8 +3236,34 @@ class TerminalController {
             "title": workspace.title,
             "selected": selected,
             "pinned": workspace.isPinned,
-            "panes": panes
+            "panes": panes,
+            "split_tree": splitTree
         ]
+    }
+
+    /// Convert bonsplit ExternalTreeNode into a JSON-compatible dictionary for the tree API.
+    private func v2TreeSplitTreeNode(_ node: ExternalTreeNode, paneByPanelId: [UUID: UUID]) -> [String: Any] {
+        switch node {
+        case .pane(let paneNode):
+            let paneUUID = UUID(uuidString: paneNode.id)
+            return [
+                "type": "pane",
+                "pane_id": paneNode.id,
+                "pane_ref": v2Ref(kind: .pane, uuid: paneUUID)
+            ]
+        case .split(let splitNode):
+            let ratio = splitNode.dividerPosition
+            let firstPercent = Int(round(ratio * 100))
+            let secondPercent = 100 - firstPercent
+            return [
+                "type": "split",
+                "orientation": splitNode.orientation,
+                "ratio": ratio,
+                "ratio_label": "\(firstPercent)/\(secondPercent)",
+                "first": v2TreeSplitTreeNode(splitNode.first, paneByPanelId: paneByPanelId),
+                "second": v2TreeSplitTreeNode(splitNode.second, paneByPanelId: paneByPanelId)
+            ]
+        }
     }
 
     private func v2TreeSurfaceGroupNode(_ node: SurfaceGroup.SplitNode, focusedChildId: UUID?) -> [String: Any] {
@@ -5132,7 +5166,20 @@ class TerminalController {
                 result = .err(code: "not_found", message: "Workspace not found", data: nil)
                 return
             }
-            let targetSurfaceId: UUID? = v2UUID(params, "surface_id") ?? ws.focusedPanelId
+            // Resolve target surface: explicit surface_id > pane_id's selected surface > focused surface
+            var targetSurfaceId: UUID? = v2UUID(params, "surface_id")
+            if targetSurfaceId == nil, let paneUUID = v2UUID(params, "pane_id") {
+                let paneId = PaneID(id: paneUUID)
+                if let selectedTab = ws.bonsplitController.selectedTab(inPane: paneId) {
+                    targetSurfaceId = ws.panelIdFromSurfaceId(selectedTab.id)
+                } else {
+                    result = .err(code: "not_found", message: "Pane not found or has no surfaces", data: ["pane_id": paneUUID.uuidString])
+                    return
+                }
+            }
+            if targetSurfaceId == nil {
+                targetSurfaceId = ws.focusedPanelId
+            }
             guard let targetSurfaceId else {
                 result = .err(code: "not_found", message: "No focused surface", data: nil)
                 return
@@ -6629,7 +6676,21 @@ class TerminalController {
             return .err(code: "invalid_params", message: "Missing idle (bool)", data: nil)
         }
         claudeHookIdleState[surfaceId] = idle
+        if !idle {
+            claudeHookNeedsInputState.removeValue(forKey: surfaceId)
+        }
         return .ok(["surface_id": surfaceId.uuidString, "idle": idle])
+    }
+
+    private func v2ClaudeSetNeedsInput(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+        guard let needsInput = params["needs_input"] as? Bool else {
+            return .err(code: "invalid_params", message: "Missing needs_input (bool)", data: nil)
+        }
+        claudeHookNeedsInputState[surfaceId] = needsInput
+        return .ok(["surface_id": surfaceId.uuidString, "needs_input": needsInput])
     }
 
     private func v2ClaudeChildren(params: [String: Any]) -> V2CallResult {
@@ -6649,6 +6710,8 @@ class TerminalController {
                 // Try to get claude-status info for the child
                 var status: [String: Any] = [:]
                 let isIdle = claudeHookIdleState[childId] == true
+                let isNeedsInput = claudeHookNeedsInputState[childId] == true
+                let stateString = isNeedsInput ? "needs_input" : (isIdle ? "idle" : "busy")
 
                 if let ws = tabManager.tabs.first(where: { $0.panels[childId] != nil }),
                    let tp = ws.terminalPanel(for: childId) {
@@ -6678,7 +6741,7 @@ class TerminalController {
                                 .map { $0.trimmingCharacters(in: .whitespaces) }
                                 .filter { !$0.isEmpty }
                             status = [
-                                "state": isIdle ? "idle" : "busy",
+                                "state": stateString,
                                 "seconds_since_change": Int(secondsSinceChange),
                                 "last_lines": lastLines
                             ]
@@ -6687,9 +6750,9 @@ class TerminalController {
                 }
 
                 // If we couldn't read terminal text but have hook state, still report it
-                if status.isEmpty && claudeHookIdleState[childId] != nil {
+                if status.isEmpty && (claudeHookIdleState[childId] != nil || isNeedsInput) {
                     status = [
-                        "state": isIdle ? "idle" : "busy",
+                        "state": stateString,
                         "seconds_since_change": 0,
                         "last_lines": [] as [String]
                     ]
@@ -6885,6 +6948,7 @@ class TerminalController {
             }
             claudeChildParentMap.removeValue(forKey: childSurfaceId)
             claudeHookIdleState.removeValue(forKey: childSurfaceId)
+            claudeHookNeedsInputState.removeValue(forKey: childSurfaceId)
 
             // Clean up hooks
             SurfaceHookManager.shared.removeAllHooks(surfaceId: childSurfaceId)
@@ -7145,8 +7209,9 @@ class TerminalController {
         // Clean up surface metadata files
         SurfaceMetaStore.remove(surfaceId: surfaceId)
 
-        // Clean up hook idle state
+        // Clean up hook idle/needs-input state
         claudeHookIdleState.removeValue(forKey: surfaceId)
+        claudeHookNeedsInputState.removeValue(forKey: surfaceId)
 
         // If this surface was a parent, mark as closed but keep maps so children can still be managed
         if let children = claudeParentChildMap[surfaceId], !children.isEmpty {
