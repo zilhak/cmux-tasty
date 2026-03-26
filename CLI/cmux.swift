@@ -2751,6 +2751,150 @@ struct CMUXCLI {
                 print("OK \(sentCount)/\(totalChildren) sent")
             }
 
+        case "hook":
+            let hookSubcommand = commandArgs.first ?? ""
+            let hookArgs = commandArgs.dropFirst().map { $0 }
+            switch hookSubcommand {
+            case "create":
+                let (hCondArg, hRem0) = parseOption(hookArgs, name: "--condition")
+                let (hEveryArg, hRem1) = parseOption(hRem0, name: "--every")
+                let (hAfterArg, hRem2) = parseOption(hRem1, name: "--after")
+                let (hPathArg, hRem3) = parseOption(hRem2, name: "--path")
+                let (hCmdArg, hRem4) = parseOption(hRem3, name: "--command")
+                let (hRestartArg, _) = parseOption(hRem4, name: "--restart")
+
+                guard let condType = hCondArg else {
+                    throw CLIError(message: "hook create requires --condition <interval|once|file-modified|dir-created|dir-modified>")
+                }
+                guard let command = hCmdArg else {
+                    throw CLIError(message: "hook create requires --command <shell command>")
+                }
+
+                var condParams: [String: Any] = ["type": condType]
+                switch condType {
+                case "interval":
+                    guard let raw = hEveryArg, let secs = parseDuration(raw) else {
+                        throw CLIError(message: "interval requires --every <duration> (e.g., 30s, 5m, 1h)")
+                    }
+                    condParams["every_seconds"] = secs
+                case "once":
+                    guard let raw = hAfterArg, let secs = parseDuration(raw) else {
+                        throw CLIError(message: "once requires --after <duration> (e.g., 30s, 5m, 1h)")
+                    }
+                    condParams["after_seconds"] = secs
+                case "file-modified", "dir-created", "dir-modified":
+                    guard let path = hPathArg else {
+                        throw CLIError(message: "\(condType) requires --path <path>")
+                    }
+                    let resolved = (path as NSString).expandingTildeInPath
+                    let absPath = resolved.hasPrefix("/") ? resolved : FileManager.default.currentDirectoryPath + "/" + resolved
+                    condParams["path"] = absPath
+                default:
+                    throw CLIError(message: "Unknown condition: \(condType). Use: interval, once, file-modified, dir-created, dir-modified")
+                }
+
+                var params: [String: Any] = [
+                    "condition": condParams,
+                    "command": command,
+                ]
+                if let restart = hRestartArg {
+                    params["restart"] = restart
+                }
+                // Pass caller's cmux env so commands can reference surfaces/workspaces
+                var env: [String: String] = [:]
+                for key in ["CMUX_SURFACE_ID", "CMUX_WORKSPACE_ID", "CMUX_SOCKET_PATH", "CMUX_TAB_ID"] {
+                    if let val = ProcessInfo.processInfo.environment[key] { env[key] = val }
+                }
+                params["environment"] = env
+
+                let payload = try client.sendV2(method: "hook.create", params: params)
+                printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: v2OKSummary(payload, idFormat: idFormat))
+
+            case "list":
+                let payload = try client.sendV2(method: "hook.list", params: [:])
+                if jsonOutput {
+                    print(jsonString(formatIDs(payload, mode: idFormat)))
+                } else {
+                    let hooks = payload["hooks"] as? [[String: Any]] ?? []
+                    if hooks.isEmpty {
+                        print("No hooks")
+                    } else {
+                        for hook in hooks {
+                            let id = (hook["id"] as? String) ?? "?"
+                            let shortId = String(id.prefix(8))
+                            let cond = hook["condition"] as? [String: Any] ?? [:]
+                            let condType = (cond["type"] as? String) ?? "?"
+                            let command = (hook["command"] as? String) ?? "?"
+                            let restart = (hook["restart"] as? String) ?? "no"
+                            let restartTag = restart == "always" ? " [restart:always]" : ""
+
+                            var condDetail = condType
+                            if let secs = cond["every_seconds"] as? TimeInterval {
+                                condDetail = "interval \(formatDuration(secs))"
+                            } else if let secs = cond["after_seconds"] as? TimeInterval {
+                                condDetail = "once \(formatDuration(secs))"
+                            } else if let path = cond["path"] as? String {
+                                condDetail = "\(condType) \(path)"
+                            }
+
+                            let cmdPreview = command.count > 60 ? String(command.prefix(57)) + "..." : command
+                            print("\(shortId)  \(condDetail)\(restartTag)  \(cmdPreview)")
+                        }
+                    }
+                }
+
+            case "delete":
+                guard let hookIdStr = hookArgs.dropFirst().first else {
+                    throw CLIError(message: "hook delete requires <hook-id>")
+                }
+                let params: [String: Any] = ["hook_id": hookIdStr]
+                let payload = try client.sendV2(method: "hook.delete", params: params)
+                printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: "OK")
+
+            case "logs":
+                let (hLogHookId, _) = parseOption(Array(hookArgs.dropFirst()), name: "--hook-id")
+                var params: [String: Any] = [:]
+                if let hLogHookId { params["hook_id"] = hLogHookId }
+                let payload = try client.sendV2(method: "hook.logs", params: params)
+                if jsonOutput {
+                    print(jsonString(formatIDs(payload, mode: idFormat)))
+                } else {
+                    let logs = payload["logs"] as? [[String: Any]] ?? []
+                    if logs.isEmpty {
+                        print("No logs")
+                    } else {
+                        for log in logs.suffix(20) {
+                            let hookId = String(((log["hook_id"] as? String) ?? "?").prefix(8))
+                            let cond = (log["condition"] as? String) ?? "?"
+                            let exitCode = (log["exit_code"] as? Int) ?? -1
+                            let date = (log["date"] as? String) ?? "?"
+                            let status = exitCode == 0 ? "ok" : "exit:\(exitCode)"
+                            let trigger = (log["trigger_info"] as? String).map { " ← \($0)" } ?? ""
+                            print("\(date)  \(hookId)  \(cond)  \(status)\(trigger)")
+                        }
+                    }
+                }
+
+            case "delete-all":
+                _ = try client.sendV2(method: "hook.list", params: [:])
+                // Delete each hook individually
+                let listPayload = try client.sendV2(method: "hook.list", params: [:])
+                let allHooks = listPayload["hooks"] as? [[String: Any]] ?? []
+                for hook in allHooks {
+                    if let id = hook["id"] as? String {
+                        _ = try? client.sendV2(method: "hook.delete", params: ["hook_id": id])
+                    }
+                }
+                print("OK deleted \(allHooks.count) hooks")
+
+            default:
+                if hookSubcommand.isEmpty {
+                    throw CLIError(message: "hook requires a subcommand: create, list, delete, logs, delete-all")
+                } else {
+                    throw CLIError(message: "Unknown hook subcommand: \(hookSubcommand)")
+                }
+            }
+
         case "surface-meta":
             let smSubcommand = commandArgs.first ?? ""
             let smArgs = commandArgs.dropFirst().map { $0 }
@@ -8126,6 +8270,50 @@ struct CMUXCLI {
               cmux surface-meta list --surface surface:3
               cmux surface-meta unset --key role
             """
+        case "hook":
+            return """
+            Usage: cmux hook <create|list|delete|logs|delete-all>
+
+            Global event-driven hooks. When a condition is met, a shell command runs
+            with cmux CLI available in PATH.
+
+            Subcommands:
+              create    Create a new hook
+              list      List all active hooks
+              delete    Delete a hook by ID
+              logs      Show recent execution logs
+              delete-all  Delete all hooks
+
+            Conditions:
+              --condition interval --every <duration>     Repeat at fixed interval
+              --condition once --after <duration>          Fire once after delay
+              --condition file-modified --path <path>      File is modified
+              --condition dir-created --path <path>        New file in directory
+              --condition dir-modified --path <path>       File modified in directory
+
+            Duration format: 30s, 5m, 1h, or raw seconds (30)
+
+            Flags:
+              --command <cmd>        Shell command to execute (required)
+              --restart always       Persist across app restarts (like docker --restart always)
+
+            Environment variables injected into command:
+              CMUX_HOOK_ID           Hook UUID
+              CMUX_HOOK_CONDITION    Condition type
+              CMUX_HOOK_FILE         Changed file path (file hooks only)
+              CMUX_SURFACE_ID        Creator's surface (if created from cmux terminal)
+              CMUX_WORKSPACE_ID      Creator's workspace
+
+            Example:
+              cmux hook create --condition interval --every 5m --command 'cmux send --surface child:1 "status report\\n"'
+              cmux hook create --condition file-modified --path ./config.json --command 'cmux notify --title "config changed"'
+              cmux hook create --condition dir-created --path ./output/ --command 'echo $CMUX_HOOK_FILE created'
+              cmux hook create --condition once --after 30m --command 'cmux notify --title "break time"'
+              cmux hook create --condition interval --every 1h --restart always --command 'echo hourly check'
+              cmux hook list
+              cmux hook delete abc12345
+              cmux hook logs
+            """
         case "surface-hook":
             return """
             Usage: cmux surface-hook <set|list|unset> [flags]
@@ -10089,6 +10277,31 @@ struct CMUXCLI {
             return id
         }
         return "?"
+    }
+
+    /// Parse duration string like "30s", "5m", "1h", "90" (seconds) into seconds.
+    private func parseDuration(_ raw: String) -> TimeInterval? {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        if trimmed.hasSuffix("s") {
+            return Double(trimmed.dropLast())
+        } else if trimmed.hasSuffix("m") {
+            return Double(trimmed.dropLast()).map { $0 * 60 }
+        } else if trimmed.hasSuffix("h") {
+            return Double(trimmed.dropLast()).map { $0 * 3600 }
+        } else {
+            return Double(trimmed)
+        }
+    }
+
+    /// Format seconds into human-readable duration string.
+    private func formatDuration(_ seconds: TimeInterval) -> String {
+        if seconds >= 3600 && seconds.truncatingRemainder(dividingBy: 3600) == 0 {
+            return "\(Int(seconds / 3600))h"
+        } else if seconds >= 60 && seconds.truncatingRemainder(dividingBy: 60) == 0 {
+            return "\(Int(seconds / 60))m"
+        } else {
+            return "\(Int(seconds))s"
+        }
     }
 
     private func isUUID(_ value: String) -> Bool {

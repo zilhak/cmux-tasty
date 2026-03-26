@@ -3331,6 +3331,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ])
         TerminalController.shared.stop()
         TerminalController.shared.start(tabManager: tabManager, socketPath: restartPath, accessMode: config.mode)
+        // Restore persisted global hooks (restart=always) after socket is ready
+        CmuxHookManager.shared.restorePersistedHooks()
     }
 
     private func disableSuddenTerminationIfNeeded() {

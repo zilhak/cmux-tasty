@@ -2601,6 +2601,16 @@ class TerminalController {
         case "workspace.claude_activity":
             return v2Result(id: id, self.v2WorkspaceClaudeActivity(params: params))
 
+        // Global hooks (cmux hook)
+        case "hook.create":
+            return v2Result(id: id, self.v2HookCreate(params: params))
+        case "hook.list":
+            return v2Result(id: id, self.v2HookList(params: params))
+        case "hook.delete":
+            return v2Result(id: id, self.v2HookDelete(params: params))
+        case "hook.logs":
+            return v2Result(id: id, self.v2HookLogs(params: params))
+
         // Claude parent-child
         case "claude.spawn":
             return v2Result(id: id, self.v2ClaudeSpawn(params: params))
@@ -2780,6 +2790,10 @@ class TerminalController {
             "surface.list_hooks",
             "surface.unset_hook",
             "surface.fire_hook",
+            "hook.create",
+            "hook.list",
+            "hook.delete",
+            "hook.logs",
             "surface.set_meta_kv",
             "surface.get_meta_kv",
             "surface.unset_meta_kv",
@@ -17320,6 +17334,81 @@ class TerminalController {
             }
         }
         return result
+    }
+
+    // MARK: - Global Hook API (CmuxHookManager)
+
+    private func v2HookCreate(params: [String: Any]) -> V2CallResult {
+        guard let condDict = params["condition"] as? [String: Any],
+              let condType = condDict["type"] as? String else {
+            return .err(code: "invalid_params", message: "Missing or invalid condition", data: nil)
+        }
+        guard let command = v2String(params, "command") else {
+            return .err(code: "invalid_params", message: "Missing command", data: nil)
+        }
+
+        let condition: CmuxHookManager.Condition
+        switch condType {
+        case "interval":
+            guard let secs = condDict["every_seconds"] as? TimeInterval, secs > 0 else {
+                return .err(code: "invalid_params", message: "interval requires every_seconds > 0", data: nil)
+            }
+            condition = .interval(seconds: secs)
+        case "once":
+            guard let secs = condDict["after_seconds"] as? TimeInterval, secs > 0 else {
+                return .err(code: "invalid_params", message: "once requires after_seconds > 0", data: nil)
+            }
+            condition = .once(seconds: secs)
+        case "file-modified":
+            guard let path = condDict["path"] as? String, !path.isEmpty else {
+                return .err(code: "invalid_params", message: "file-modified requires path", data: nil)
+            }
+            condition = .fileModified(path: path)
+        case "dir-created":
+            guard let path = condDict["path"] as? String, !path.isEmpty else {
+                return .err(code: "invalid_params", message: "dir-created requires path", data: nil)
+            }
+            condition = .dirCreated(path: path)
+        case "dir-modified":
+            guard let path = condDict["path"] as? String, !path.isEmpty else {
+                return .err(code: "invalid_params", message: "dir-modified requires path", data: nil)
+            }
+            condition = .dirModified(path: path)
+        default:
+            return .err(code: "invalid_params", message: "Unknown condition type: \(condType). Use: interval, once, file-modified, dir-created, dir-modified", data: nil)
+        }
+
+        let restart: CmuxHookManager.RestartPolicy = (v2String(params, "restart") == "always") ? .always : .no
+        let env = params["environment"] as? [String: String] ?? [:]
+
+        let hook = CmuxHookManager.shared.create(
+            condition: condition,
+            command: command,
+            restart: restart,
+            environment: env
+        )
+        return .ok(hook.toDictionary())
+    }
+
+    private func v2HookList(params: [String: Any]) -> V2CallResult {
+        let hooks = CmuxHookManager.shared.list()
+        return .ok(["hooks": hooks.map { $0.toDictionary() }])
+    }
+
+    private func v2HookDelete(params: [String: Any]) -> V2CallResult {
+        guard let hookId = v2UUID(params, "hook_id") else {
+            return .err(code: "invalid_params", message: "Missing hook_id", data: nil)
+        }
+        if CmuxHookManager.shared.delete(hookId: hookId) {
+            return .ok(["deleted": hookId.uuidString])
+        }
+        return .err(code: "not_found", message: "Hook not found", data: ["hook_id": hookId.uuidString])
+    }
+
+    private func v2HookLogs(params: [String: Any]) -> V2CallResult {
+        let hookId = v2UUID(params, "hook_id")
+        let logs = CmuxHookManager.shared.logs(hookId: hookId)
+        return .ok(["logs": logs.map { $0.toDictionary() }])
     }
 
     private func v2SurfaceFireHook(params: [String: Any]) -> V2CallResult {
