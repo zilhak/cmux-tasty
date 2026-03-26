@@ -7656,6 +7656,53 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     @discardableResult
+    func newExplorerSurface(
+        inPane paneId: PaneID,
+        rootPath: String,
+        focus: Bool? = nil
+    ) -> ExplorerPanel? {
+        let shouldFocusNewTab = focus ?? (bonsplitController.focusedPaneId == paneId)
+        let previousFocusedPanelId = focusedPanelId
+        let previousHostedView = focusedTerminalPanel?.hostedView
+
+        let explorerPanel = ExplorerPanel(workspaceId: id, rootPath: rootPath)
+        panels[explorerPanel.id] = explorerPanel
+        panelTitles[explorerPanel.id] = explorerPanel.displayTitle
+
+        guard let newTabId = bonsplitController.createTab(
+            title: explorerPanel.displayTitle,
+            icon: explorerPanel.displayIcon,
+            kind: SurfaceKind.explorer,
+            isDirty: false,
+            isLoading: false,
+            isPinned: false,
+            inPane: paneId
+        ) else {
+            panels.removeValue(forKey: explorerPanel.id)
+            panelTitles.removeValue(forKey: explorerPanel.id)
+            return nil
+        }
+
+        surfaceIdToPanelId[newTabId] = explorerPanel.id
+
+        if shouldFocusNewTab {
+            previousHostedView?.suppressReparentFocus()
+            focusPanel(explorerPanel.id)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                previousHostedView?.clearSuppressReparentFocus()
+            }
+        } else {
+            preserveFocusAfterNonFocusSplit(
+                preferredPanelId: previousFocusedPanelId,
+                splitPanelId: explorerPanel.id,
+                previousHostedView: previousHostedView
+            )
+        }
+
+        return explorerPanel
+    }
+
+    @discardableResult
     func newMarkdownSurface(
         inPane paneId: PaneID,
         filePath: String,
@@ -10611,6 +10658,8 @@ extension Workspace: BonsplitDelegate {
             _ = newTerminalSurface(inPane: pane)
         case "browser":
             _ = newBrowserSurface(inPane: pane)
+        case "explorer":
+            _ = newExplorerSurface(inPane: pane, rootPath: currentDirectory)
         default:
             _ = newTerminalSurface(inPane: pane)
         }
