@@ -8490,6 +8490,14 @@ struct VerticalTabsSidebar: View {
                                 let remoteContextMenuTargets = tabManager.tabs.filter { workspace in
                                     contextTargetIds.contains(workspace.id) && workspace.isRemoteWorkspace
                                 }
+
+                                if index > 0 {
+                                    Rectangle()
+                                        .fill(Color.primary.opacity(0.12))
+                                        .frame(height: 1)
+                                        .padding(.horizontal, 10)
+                                }
+
                                 TabItemView(
                                     tabManager: tabManager,
                                     notificationStore: notificationStore,
@@ -11201,7 +11209,21 @@ private struct TabItemView: View, Equatable {
             return pullRequestDisplays(orderedPanelIds: orderedPanelIds)
         }()
 
-        VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 0) {
+            // Workspace number indicator
+            Text("\(index + 1)")
+                .font(.system(size: 16, weight: .bold, design: .monospaced))
+                .foregroundColor(activeSecondaryColor(0.5))
+                .frame(width: 15, alignment: .leading)
+                .frame(maxHeight: .infinity)
+
+            Rectangle()
+                .fill(Color.primary.opacity(0.25))
+                .frame(width: 1)
+                .frame(maxHeight: .infinity)
+                .padding(.vertical, 4)
+
+            VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 if unreadCount > 0 {
                     ZStack {
@@ -11430,7 +11452,8 @@ private struct TabItemView: View, Equatable {
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
-        }
+        } // VStack
+        } // HStack (workspace number + content)
         .animation(.easeInOut(duration: 0.2), value: tab.logEntries.count)
         .animation(.easeInOut(duration: 0.2), value: tab.progress != nil)
         .animation(.easeInOut(duration: 0.2), value: tab.metadataBlocks.count)

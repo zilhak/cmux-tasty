@@ -9460,6 +9460,12 @@ final class Workspace: Identifiable, ObservableObject {
         _ = reorderSurface(panelId: newPanel.id, toIndex: targetIndex)
     }
 
+    private func createExplorerToRight(of anchorTabId: TabID, inPane paneId: PaneID) {
+        let targetIndex = insertionIndexToRight(of: anchorTabId, inPane: paneId)
+        guard let newPanel = newExplorerSurface(inPane: paneId, rootPath: currentDirectory, focus: true) else { return }
+        _ = reorderSurface(panelId: newPanel.id, toIndex: targetIndex)
+    }
+
     private func duplicateBrowserToRight(anchorTabId: TabID, inPane paneId: PaneID) {
         guard let panelId = panelIdFromSurfaceId(anchorTabId),
               let browser = browserPanel(for: panelId) else { return }
@@ -10684,6 +10690,8 @@ extension Workspace: BonsplitDelegate {
             createTerminalToRight(of: tab.id, inPane: pane)
         case .newBrowserToRight:
             createBrowserToRight(of: tab.id, inPane: pane)
+        case .newExplorerToRight:
+            createExplorerToRight(of: tab.id, inPane: pane)
         case .reload:
             guard let panelId = panelIdFromSurfaceId(tab.id),
                   let browser = browserPanel(for: panelId) else { return }

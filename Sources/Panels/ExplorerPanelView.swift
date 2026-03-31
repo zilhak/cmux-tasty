@@ -9,6 +9,7 @@ struct ExplorerPanelView: View {
     let portalPriority: Int
     let onRequestPanelFocus: () -> Void
 
+    @AppStorage("markdownZoomLevel") private var zoomLevel: Double = 1.0
     @State private var focusFlashOpacity: Double = 0.0
     @State private var focusFlashAnimationGeneration: Int = 0
     @State private var sidebarWidth: CGFloat = 200
@@ -51,6 +52,7 @@ struct ExplorerPanelView: View {
                 .padding(FocusFlashPattern.ringInset)
                 .allowsHitTesting(false)
         }
+        .background(MarkdownZoomKeyMonitor(zoomLevel: $zoomLevel, isFocused: isFocused))
         .onChange(of: panel.focusFlashToken) { _ in
             triggerFocusFlashAnimation()
         }
@@ -235,7 +237,7 @@ struct ExplorerPanelView: View {
     private var rawTextView: some View {
         ScrollView([.horizontal, .vertical]) {
             Text(panel.fileContent)
-                .font(.system(size: 13, design: .monospaced))
+                .font(.system(size: 13 * CGFloat(zoomLevel), design: .monospaced))
                 .textSelection(.enabled)
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -249,7 +251,8 @@ struct ExplorerPanelView: View {
             text: Binding(
                 get: { panel.editedContent },
                 set: { panel.updateEditedContent($0) }
-            )
+            ),
+            fontSize: 13 * CGFloat(zoomLevel)
         )
     }
 
@@ -306,15 +309,16 @@ struct ExplorerPanelView: View {
 
     private var explorerMarkdownTheme: Theme {
         let isDark = colorScheme == .dark
+        let z = CGFloat(zoomLevel)
         return Theme()
             .text {
                 ForegroundColor(isDark ? .white.opacity(0.9) : .primary)
-                FontSize(14)
+                FontSize(14 * z)
             }
             .heading1 { configuration in
                 VStack(alignment: .leading, spacing: 8) {
                     configuration.label
-                        .markdownTextStyle { FontSize(24); FontWeight(.bold) }
+                        .markdownTextStyle { FontSize(24 * z); FontWeight(.bold) }
                     Divider()
                 }
                 .padding(.top, 16)
@@ -322,13 +326,13 @@ struct ExplorerPanelView: View {
             }
             .heading2 { configuration in
                 configuration.label
-                    .markdownTextStyle { FontSize(20); FontWeight(.semibold) }
+                    .markdownTextStyle { FontSize(20 * z); FontWeight(.semibold) }
                     .padding(.top, 12)
                     .padding(.bottom, 4)
             }
             .heading3 { configuration in
                 configuration.label
-                    .markdownTextStyle { FontSize(16); FontWeight(.semibold) }
+                    .markdownTextStyle { FontSize(16 * z); FontWeight(.semibold) }
                     .padding(.top, 8)
                     .padding(.bottom, 2)
             }
@@ -337,7 +341,7 @@ struct ExplorerPanelView: View {
                     configuration.label
                         .markdownTextStyle {
                             FontFamilyVariant(.monospaced)
-                            FontSize(13)
+                            FontSize(13 * z)
                         }
                         .padding(12)
                 }
@@ -347,7 +351,7 @@ struct ExplorerPanelView: View {
             }
             .code {
                 FontFamilyVariant(.monospaced)
-                FontSize(13)
+                FontSize(13 * z)
                 BackgroundColor(isDark ? Color(white: 0.18) : Color(white: 0.90))
             }
     }
@@ -373,6 +377,7 @@ struct ExplorerPanelView: View {
 
 struct ExplorerTextEditorView: NSViewRepresentable {
     @Binding var text: String
+    var fontSize: CGFloat = 13
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSTextView.scrollableTextView()
@@ -382,7 +387,7 @@ struct ExplorerTextEditorView: NSViewRepresentable {
         textView.isSelectable = true
         textView.allowsUndo = true
         textView.isRichText = false
-        textView.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         textView.textColor = .textColor
         textView.backgroundColor = .textBackgroundColor
         textView.isAutomaticQuoteSubstitutionEnabled = false
@@ -396,6 +401,7 @@ struct ExplorerTextEditorView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         let textView = scrollView.documentView as! NSTextView
+        textView.font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         if textView.string != text {
             let selectedRange = textView.selectedRange()
             textView.string = text
