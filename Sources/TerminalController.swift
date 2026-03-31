@@ -6097,7 +6097,7 @@ class TerminalController {
             let sendStart = ProcessInfo.processInfo.systemUptime
             #endif
             let queued: Bool
-            let surface: ghostty_surface_t? = terminalPanel.surface.surface ?? waitForTerminalSurface(terminalPanel, waitUpTo: 2.0)
+            let surface: ghostty_surface_t? = terminalPanel.surface.surface
             if let surface {
                 if bracketPaste {
                     // Wrap in bracket paste mode so the terminal treats newlines as literal paste
@@ -6156,8 +6156,8 @@ class TerminalController {
                 result = .err(code: "invalid_params", message: "Surface is not a terminal", data: ["surface_id": surfaceId.uuidString])
                 return
             }
-            guard let surface = waitForTerminalSurface(terminalPanel, waitUpTo: 2.0) else {
-                result = .err(code: "internal_error", message: "Surface not ready", data: ["surface_id": surfaceId.uuidString])
+            guard let surface = terminalPanel.surface.surface else {
+                result = .err(code: "not_ready", message: "Surface not ready", data: ["surface_id": surfaceId.uuidString])
                 return
             }
             guard sendNamedKey(surface, keyName: key) else {
@@ -8672,12 +8672,25 @@ class TerminalController {
         return .success(outcome.0)
     }
 
+    /// Context box for CFRunLoopTimer callback in v2AwaitCallback.
+    /// Pointers to the caller's stack variables so the C callback can mutate them.
+    private class _V2AwaitTimeoutBox {
+        let resolved: UnsafeMutablePointer<Bool>
+        let timedOut: UnsafeMutablePointer<Bool>
+        let runLoop: CFRunLoop
+        init(resolved: UnsafeMutablePointer<Bool>, timedOut: UnsafeMutablePointer<Bool>, runLoop: CFRunLoop) {
+            self.resolved = resolved
+            self.timedOut = timedOut
+            self.runLoop = runLoop
+        }
+    }
+
     private func v2AwaitCallback<T>(
         timeout: TimeInterval,
         start: (@escaping (T) -> Void) -> Void
     ) -> T? {
         if Thread.isMainThread {
-            let runLoop = CFRunLoopGetCurrent()
+            let runLoop = CFRunLoopGetCurrent()!
             var resolved = false
             var timedOut = false
             var result: T?
@@ -8692,14 +8705,41 @@ class TerminalController {
             start(finish)
             guard !resolved else { return result }
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
-                guard !resolved else { return }
-                resolved = true
-                timedOut = true
-                CFRunLoopStop(runLoop)
+            // Use CFRunLoopTimer instead of DispatchQueue.main.asyncAfter.
+            // asyncAfter cannot fire inside a nested CFRunLoopRun() when the
+            // main dispatch queue is already draining (GCD re-entrancy guard),
+            // which causes an infinite hang.
+            var timerContext = CFRunLoopTimerContext()
+            let opaqueCtx = Unmanaged.passRetained(
+                _V2AwaitTimeoutBox(resolved: &resolved, timedOut: &timedOut, runLoop: runLoop)
+            ).toOpaque()
+            timerContext.info = UnsafeMutableRawPointer(opaqueCtx)
+            timerContext.retain = { ptr in
+                if let ptr { _ = Unmanaged<_V2AwaitTimeoutBox>.fromOpaque(ptr).retain() }
+                return ptr
             }
-
+            timerContext.release = { ptr in
+                if let ptr { Unmanaged<_V2AwaitTimeoutBox>.fromOpaque(ptr).release() }
+            }
+            let timer = CFRunLoopTimerCreate(
+                kCFAllocatorDefault,
+                CFAbsoluteTimeGetCurrent() + timeout,
+                0, 0, 0,
+                { _, info in
+                    guard let info else { return }
+                    let box = Unmanaged<_V2AwaitTimeoutBox>.fromOpaque(info).takeUnretainedValue()
+                    guard !box.resolved.pointee else { return }
+                    box.resolved.pointee = true
+                    box.timedOut.pointee = true
+                    CFRunLoopStop(box.runLoop)
+                },
+                &timerContext
+            )!
+            CFRunLoopAddTimer(runLoop, timer, .defaultMode)
             CFRunLoopRun()
+            CFRunLoopRemoveTimer(runLoop, timer, .defaultMode)
+            // Release the box retained for opaqueCtx
+            Unmanaged<_V2AwaitTimeoutBox>.fromOpaque(opaqueCtx).release()
             return timedOut ? nil : result
         }
 
@@ -14867,22 +14907,25 @@ class TerminalController {
                 finish(())
             }
 
+            // Use queue: nil so notifications are delivered on the posting
+            // thread's run loop, not via the main dispatch queue.  When this
+            // code runs inside a nested CFRunLoopRun() that was entered from a
+            // main-queue drain, queue: .main callbacks can never fire (GCD
+            // re-entrancy guard), causing an infinite hang.
             readyObserver = NotificationCenter.default.addObserver(
                 forName: .terminalSurfaceDidBecomeReady,
                 object: terminalSurface,
-                queue: .main
+                queue: nil
             ) { _ in
                 finishOnce()
             }
             hostedViewObserver = NotificationCenter.default.addObserver(
                 forName: .terminalSurfaceHostedViewDidMoveToWindow,
                 object: terminalSurface,
-                queue: .main
+                queue: nil
             ) { _ in
-                Task { @MainActor in
-                    if terminalSurface.surface != nil {
-                        finishOnce()
-                    }
+                if terminalSurface.surface != nil {
+                    finishOnce()
                 }
             }
 
